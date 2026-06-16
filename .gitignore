@@ -1,0 +1,8 @@
+node_modules/
+dist/
+apps/extension/dist/
+*.log
+*.env
+/.idea
+/.vscode
+coverage/

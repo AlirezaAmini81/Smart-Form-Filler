@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Smart Form Filler (Phase 1)",
+  "version": "0.1.0",
+  "description": "Privacy-first local form assistance — Phase 1 skeleton",
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "Smart Form Filler"
+  },
+  "background": {
+    "service_worker": "assets/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["assets/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": ["tabs", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "web_accessible_resources": [
+    {
+      "resources": ["setup.html", "assets/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
