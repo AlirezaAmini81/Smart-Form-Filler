@@ -8,7 +8,7 @@ Key components:
 - Background Service Worker: coordinates messaging (placeholder).
 - Encrypted Vault: placeholder module; planned to use IndexedDB + Web Crypto API.
 - Setup Assistant: UI placeholder for later ingestion and parsing features.
-- Local LLM connector: provider abstraction with a mock provider in Phase 1.
+- Local LLM connector: provider abstraction with local and optional cloud providers.
 - Suggestion Engine: placeholder for later suggestion generation and provenance.
 
 Phase 1 delivers a working popup, content script communication, mock analysis, shared types/schemas, and documentation skeleton.

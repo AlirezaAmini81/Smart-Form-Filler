@@ -5,6 +5,8 @@
   "description": "Smart Form Filler — privacy-first local personal knowledge system (Phase 1)",
   "scripts": {
     "dev": "vite --config apps/extension/vite.config.ts",
+    "dev:extension": "vite --config apps/extension/vite.config.ts",
+    "dev:api": "tsx apps/api/src/server.ts",
     "build": "vite build --config apps/extension/vite.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -14,22 +16,28 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "@types/chrome": "^0.0.220",
-    "@vitejs/plugin-react": "^4.0.0",
-    "autoprefixer": "^10.4.14",
-    "happy-dom": "^13.10.1",
-    "postcss": "^8.4.23",
-    "tailwindcss": "^3.4.7",
-    "typescript": "^5.2.2",
-    "vite": "^5.2.0",
-    "vitest": "^1.4.3",
-    "zod": "^4.4.3",
-    "@types/react": "^18.2.21",
-    "@types/react-dom": "^18.2.7",
-    "@types/node": "^20.4.2"
+    "@tailwindcss/vite": "4.3.0",
+    "@types/chrome": "0.1.42",
+    "@types/cors": "2.8.19",
+    "@types/express": "5.0.3",
+    "@types/node": "24",
+    "@types/react": "19.2.15",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.18",
+    "happy-dom": "20.9.0",
+    "tailwindcss": "4.3.0",
+    "tsx": "4.22.2",
+    "typescript": "6.0.3",
+    "vite": "8.0.14",
+    "vitest": "4.1.7"
   },
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "cors": "2.8.6",
+    "dotenv": "17.4.2",
+    "express": "5.2.1",
+    "openai": "6.39.1",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "zod": "4.4.3"
   }
 }

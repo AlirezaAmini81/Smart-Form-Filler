@@ -42,14 +42,73 @@ export const LocalLlmStatusSchema = z.object({
 
 export type LocalLlmStatus = z.infer<typeof LocalLlmStatusSchema>
 
-// Suggestion placeholder
+// Suggestion schemas
+export const SuggestionConfidenceSchema = z.enum(['low', 'medium', 'high'])
+export type SuggestionConfidence = z.infer<typeof SuggestionConfidenceSchema>
+
+export const SuggestionValueTypeSchema = z.enum([
+  'direct-copy',
+  'normalized',
+  'generated',
+  'unknown'
+])
+export type SuggestionValueType = z.infer<typeof SuggestionValueTypeSchema>
+
+export const SuggestionSensitivitySchema = z.enum([
+  'public',
+  'normal',
+  'sensitive',
+  'secret'
+])
+export type SuggestionSensitivity = z.infer<typeof SuggestionSensitivitySchema>
+
+export const SuggestionProvenanceSchema = z.object({
+  profileId: z.string(),
+  knowledgeEntryIds: z.array(z.string()),
+  sourceIds: z.array(z.string()),
+  sourceLabels: z.array(z.string()).optional()
+})
+export type SuggestionProvenance = z.infer<typeof SuggestionProvenanceSchema>
+
 export const SuggestedFieldValueSchema = z.object({
-  fieldName: z.string(),
-  value: z.string(),
-  confidence: z.number().optional()
+  fieldId: z.string(),
+  fieldName: z.string().optional(),
+  fieldLabel: z.string().optional(),
+  suggestedValue: z.string().nullable(),
+  valueType: SuggestionValueTypeSchema,
+  confidence: SuggestionConfidenceSchema,
+  reasoningSummary: z.string(),
+  provenance: SuggestionProvenanceSchema,
+  sensitivity: SuggestionSensitivitySchema,
+  requiresUserConfirmation: z.boolean(),
+  warnings: z.array(z.string())
 })
 
 export type SuggestedFieldValue = z.infer<typeof SuggestedFieldValueSchema>
+
+export const SuggestionGenerationResponseSchema = z
+  .object({
+    suggestions: z.array(
+      z
+        .object({
+          fieldId: z.string(),
+          suggestedValue: z.string().nullable(),
+          valueType: SuggestionValueTypeSchema,
+          confidence: SuggestionConfidenceSchema,
+          reasoningSummary: z.string(),
+          knowledgeEntryIds: z.array(z.string()),
+          sourceIds: z.array(z.string()),
+          sensitivity: SuggestionSensitivitySchema,
+          requiresUserConfirmation: z.boolean(),
+          warnings: z.array(z.string())
+        })
+        .strict()
+    ),
+    warnings: z.array(z.string())
+  })
+  .strict()
+
+export type SuggestionGenerationResponse = z.infer<typeof SuggestionGenerationResponseSchema>
 
 // Vault state placeholder
 export const VaultStateSchema = z.object({
