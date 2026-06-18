@@ -27,4 +27,3 @@ Dev notes
 - `npm run dev` runs Vite (useful during development of popup UI).
 - `npm run test` runs unit tests (Vitest).
 - `npm run typecheck` runs `tsc` type checking.
-# Smart AI Form Filler
