@@ -1,4 +1,12 @@
 import React, { useState } from 'react'
+import type { ActiveProfile, SuggestionSensitivity } from '../features/suggestions/suggestionTypes'
+import type { KnowledgeEntry, StoredKnowledgeBase } from '../features/suggestions/knowledgeTypes'
+import {
+  createChromeStorageAdapter,
+  createDemoKnowledgeBase,
+  loadStoredKnowledgeBase,
+  saveStoredKnowledgeBase
+} from '../features/suggestions/knowledgeStore'
 
 // ── types ─────────────────────────────────────────────────────
 type Field = {
@@ -17,17 +25,24 @@ type CustomEntry = {
   title: string
   content: string
   long: boolean     // false = single line input, true = textarea
+  sensitivity: SuggestionSensitivity
+}
+
+type ChatMessage = {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
 }
 
 // ── fixed fields ───────────────────────────────────────────────
 const FIELDS: Field[] = [
   { key: 'name',       label: 'Full name',          placeholder: 'Alice Smith',            required: true  },
   { key: 'age',        label: 'Age',                placeholder: '30',                     required: true, type: 'number' },
-  { key: 'email',      label: 'Email address',      placeholder: 'alice@example.com',      required: true, type: 'email'  },
+  { key: 'e-mail',      label: 'E-mail address',      placeholder: 'alice@example.com',      required: true, type: 'email'  },
   { key: 'phone',      label: 'Phone number',       placeholder: '+49 123 456789',         required: false },
-  { key: 'address',    label: 'Home address',       placeholder: 'Mitte, Berlin, Germany', required: true  },
-  { key: 'education',  label: 'Education level',    placeholder: 'MSc Computer Science',   required: true  },
-  { key: 'occupation', label: 'Current occupation', placeholder: 'ML Engineer (optional)', required: false },
+  { key: 'street',    label: 'Street',             placeholder: '123 Main St',            required: true  },
+  { key: 'postalcode',    label: 'Postal code',       placeholder: '10115',                  required: true  },
+  { key: 'location',    label: 'City',       placeholder: 'Berlin', required: true  }
 ]
 
 // ── helper: make a blank custom entry ─────────────────────────
@@ -36,13 +51,219 @@ const blankEntry = (): CustomEntry => ({
   title:   '',
   content: '',
   long:    false,
+  sensitivity: 'normal',
 })
+
+const createChatMessage = (role: ChatMessage['role'], content: string): ChatMessage => ({
+  id: Math.random().toString(36).slice(2),
+  role,
+  content
+})
+
+const parseChatInput = (text: string): CustomEntry[] => {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  let noteIndex = 1
+  const entries: CustomEntry[] = []
+
+  for (const line of lines) {
+    const parts = line.split(':')
+    if (parts.length > 1) {
+      const title = parts[0].trim()
+      const content = parts.slice(1).join(':').trim()
+      if (!title || !content) {
+        continue
+      }
+      entries.push({
+        id: Math.random().toString(36).slice(2),
+        title,
+        content,
+        long: content.length > 80,
+        sensitivity: 'normal'
+      })
+    } else {
+      const content = line.trim()
+      if (!content) {
+        continue
+      }
+      entries.push({
+        id: Math.random().toString(36).slice(2),
+        title: `Note ${noteIndex}`,
+        content,
+        long: content.length > 80,
+        sensitivity: 'normal'
+      })
+      noteIndex += 1
+    }
+  }
+
+  return entries
+}
+
+const STORAGE_SOURCE_ID = 'source_setup_assistant'
+const STORAGE_SOURCE_LABEL = 'Setup Assistant'
+
+const DEFAULT_FIELD_SENSITIVITY: Record<string, SuggestionSensitivity> = {
+  email: 'sensitive',
+  phone: 'sensitive',
+  address: 'sensitive'
+}
+
+const SENSITIVITY_OPTIONS: SuggestionSensitivity[] = [
+  'public',
+  'normal',
+  'sensitive',
+  'secret'
+]
+
+const SENSITIVITY_LABELS: Record<SuggestionSensitivity, string> = {
+  public: 'public',
+  normal: 'normal',
+  sensitive: 'privat',
+  secret: 'secret'
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+function createEntryId(label: string): string {
+  const base = slugify(label) || 'entry'
+  const stamp = Date.now().toString(36)
+  return `entry_${base}_${stamp}`
+}
+
+function inferSensitivity(key: string | undefined, label: string): SuggestionSensitivity {
+  if (key && DEFAULT_FIELD_SENSITIVITY[key]) {
+    return DEFAULT_FIELD_SENSITIVITY[key]
+  }
+
+  const lowered = label.toLowerCase()
+  if (/(password|token|secret|api key|private key)/.test(lowered)) {
+    return 'secret'
+  }
+  if (/(passport|iban|bank|address|email|phone|id|license)/.test(lowered)) {
+    return 'sensitive'
+  }
+  return 'normal'
+}
+
+function buildKnowledgeEntries(params: {
+  profileId: string
+  values: Record<string, string>
+  entries: CustomEntry[]
+  fieldSensitivity: Record<string, SuggestionSensitivity>
+}): KnowledgeEntry[] {
+  const fixedEntries: KnowledgeEntry[] = FIELDS.flatMap((field) => {
+    const value = params.values[field.key]
+    if (!value?.trim()) {
+      return []
+    }
+
+    return [
+      {
+        id: createEntryId(field.label),
+        profileId: params.profileId,
+        label: field.label,
+        value: value.trim(),
+        sourceId: STORAGE_SOURCE_ID,
+        sourceLabel: STORAGE_SOURCE_LABEL,
+        sensitivity: params.fieldSensitivity[field.key] ?? inferSensitivity(field.key, field.label)
+      }
+    ]
+  })
+
+  const customEntries: KnowledgeEntry[] = params.entries.flatMap((entry) => {
+    const title = entry.title.trim()
+    const content = entry.content.trim()
+    if (!title || !content) {
+      return []
+    }
+
+    return [
+      {
+        id: createEntryId(title),
+        profileId: params.profileId,
+        label: title,
+        value: content,
+        summary: entry.long ? content.slice(0, 120) : undefined,
+        sourceId: STORAGE_SOURCE_ID,
+        sourceLabel: STORAGE_SOURCE_LABEL,
+        sensitivity: entry.sensitivity ?? inferSensitivity(undefined, title)
+      }
+    ]
+  })
+
+  return [...fixedEntries, ...customEntries]
+}
+
+async function upsertKnowledgeBase(params: {
+  accountId: string
+  profileName: string
+  values: Record<string, string>
+  entries: CustomEntry[]
+  fieldSensitivity: Record<string, SuggestionSensitivity>
+}): Promise<StoredKnowledgeBase> {
+  const adapter = createChromeStorageAdapter()
+  if (!adapter) {
+    throw new Error('chrome.storage.local is not available.')
+  }
+
+  const existing = (await loadStoredKnowledgeBase(adapter)) ?? createDemoKnowledgeBase()
+  const profile: ActiveProfile = {
+    id: params.accountId,
+    name: params.profileName,
+    sensitivity: 'normal'
+  }
+
+  const profiles = existing.profiles.some((item) => item.id === profile.id)
+    ? existing.profiles.map((item) => (item.id === profile.id ? { ...item, name: profile.name } : item))
+    : [...existing.profiles, profile]
+
+  const newEntries = buildKnowledgeEntries({
+    profileId: profile.id,
+    values: params.values,
+    entries: params.entries,
+    fieldSensitivity: params.fieldSensitivity
+  })
+
+  const entryLabels = new Set(newEntries.map((entry) => entry.label))
+  const entries = [
+    ...existing.entries.filter(
+      (entry) => !(entry.profileId === profile.id && entryLabels.has(entry.label))
+    ),
+    ...newEntries
+  ]
+
+  const updated: StoredKnowledgeBase = {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    profiles,
+    entries
+  }
+
+  await saveStoredKnowledgeBase(adapter, updated)
+  return updated
+}
 
 // ── component ─────────────────────────────────────────────────
 export default function SetupAssistant() {
   const [accountId, setAccountId] = useState('')
   const [values, setValues]       = useState<Record<string, string>>({})
+  const [fieldSensitivity, setFieldSensitivity] = useState<Record<string, SuggestionSensitivity>>(() =>
+    Object.fromEntries(
+      FIELDS.map((field) => [field.key, DEFAULT_FIELD_SENSITIVITY[field.key] ?? 'normal'])
+    )
+  )
   const [entries, setEntries]     = useState<CustomEntry[]>([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatLog, setChatLog]     = useState<ChatMessage[]>([])
   const [status, setStatus]       = useState<Status>('idle')
   const [message, setMessage]     = useState('')
   const [saved, setSaved]         = useState<Record<string, unknown> | null>(null)
@@ -50,6 +271,9 @@ export default function SetupAssistant() {
   // update a fixed field
   const set = (key: string, val: string) =>
     setValues(prev => ({ ...prev, [key]: val }))
+
+  const setSensitivity = (key: string, val: SuggestionSensitivity) =>
+    setFieldSensitivity(prev => ({ ...prev, [key]: val }))
 
   // add a new blank custom entry row
   const addEntry = () =>
@@ -62,6 +286,29 @@ export default function SetupAssistant() {
   // remove a custom entry row
   const removeEntry = (id: string) =>
     setEntries(prev => prev.filter(e => e.id !== id))
+
+  const handleChatSend = () => {
+    const text = chatInput.trim()
+    if (!text) {
+      setMessage('Enter some information to add.')
+      return
+    }
+
+    const parsed = parseChatInput(text)
+    if (parsed.length === 0) {
+      setMessage('No entries recognized. Use "Label: value" per line.')
+      return
+    }
+
+    setEntries(prev => [...prev, ...parsed])
+    setChatLog(prev => [
+      ...prev,
+      createChatMessage('user', text),
+      createChatMessage('assistant', `Added ${parsed.length} entr${parsed.length === 1 ? 'y' : 'ies'}.`)
+    ])
+    setChatInput('')
+    setMessage('')
+  }
 
   // validate required fixed fields before saving
   const validate = (): string | null => {
@@ -92,8 +339,11 @@ export default function SetupAssistant() {
         .map(e => [e.title.trim(), e.content])
     )
 
+    const profileName = values.name?.trim() || accountId.trim()
+
     const payload = {
       accountId: id,
+      profileName,
       ...values,
       ...customFlat,
       savedAt: new Date().toISOString(),
@@ -101,14 +351,21 @@ export default function SetupAssistant() {
 
     try {
       await chrome.storage.local.set({ [id]: payload })
+      await upsertKnowledgeBase({
+        accountId: id,
+        profileName,
+        values,
+        entries,
+        fieldSensitivity
+      })
 
       const result = await chrome.storage.local.get(id)
-      const data   = result[id]
+      const data   = result[id] as Record<string, unknown> | undefined
       if (!data) throw new Error('Save appeared to succeed but data not found')
 
       setSaved(data)
       setStatus('success')
-      setMessage(`Account "${id}" saved successfully.`)
+      setMessage(`Profile "${profileName}" saved to the knowledge base.`)
 
     } catch (e) {
       setStatus('error')
@@ -119,6 +376,11 @@ export default function SetupAssistant() {
   const handleReset = () => {
     setAccountId('')
     setValues({})
+    setFieldSensitivity(
+      Object.fromEntries(
+        FIELDS.map((field) => [field.key, DEFAULT_FIELD_SENSITIVITY[field.key] ?? 'normal'])
+      )
+    )
     setEntries([])
     setStatus('idle')
     setMessage('')
@@ -137,7 +399,7 @@ export default function SetupAssistant() {
               <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600 text-xl">✓</div>
               <div>
                 <h2 className="text-lg font-semibold text-slate-900">Profile saved</h2>
-                <p className="text-xs text-slate-500">Stored in Chrome's local storage</p>
+                <p className="text-xs text-slate-500">Stored in the local knowledge base</p>
               </div>
             </div>
 
@@ -145,7 +407,7 @@ export default function SetupAssistant() {
               <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-3">Stored data</div>
               <div className="space-y-2">
                 {Object.entries(data)
-                  .filter(([k]) => !['accountId', 'savedAt'].includes(k))
+                  .filter(([k]) => !['accountId', 'profileName', 'savedAt'].includes(k))
                   .map(([k, v]) => (
                     <div key={k} className="flex justify-between gap-4 text-sm">
                       <span className="text-slate-500 capitalize shrink-0">{k}</span>
@@ -227,6 +489,23 @@ export default function SetupAssistant() {
                     placeholder={f.placeholder}
                     className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
                   />
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Privacy</span>
+                    <select
+                      value={fieldSensitivity[f.key] ?? 'normal'}
+                      onChange={(event) =>
+                        setSensitivity(f.key, event.target.value as SuggestionSensitivity)
+                      }
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600"
+                      aria-label={`${f.label} privacy`}
+                    >
+                      {SENSITIVITY_OPTIONS.map((option) => (
+                        <option key={option} value={option}>
+                          {SENSITIVITY_LABELS[option]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               ))}
             </div>
@@ -316,8 +595,69 @@ export default function SetupAssistant() {
                       className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
                     />
                   )}
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Privacy</span>
+                    <select
+                      value={entry.sensitivity}
+                      onChange={(event) =>
+                        updateEntry(entry.id, 'sensitivity', event.target.value as SuggestionSensitivity)
+                      }
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600"
+                      aria-label="Entry privacy"
+                    >
+                      {SENSITIVITY_OPTIONS.map((option) => (
+                        <option key={option} value={option}>
+                          {SENSITIVITY_LABELS[option]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               ))}
+            </div>
+          </div>
+
+          <div className="border-t border-slate-100" />
+
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-3">
+              Quick import (chat)
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+              <div className="max-h-32 overflow-y-auto space-y-2">
+                {chatLog.length === 0 && (
+                  <div className="text-[12px] text-slate-400">No messages yet.</div>
+                )}
+                {chatLog.map((item) => (
+                  <div
+                    key={item.id}
+                    className={`rounded-lg px-3 py-2 text-[12px] ${
+                      item.role === 'user'
+                        ? 'bg-white border border-slate-200 text-slate-700'
+                        : 'bg-emerald-50 border border-emerald-100 text-emerald-800'
+                    }`}
+                  >
+                    {item.content}
+                  </div>
+                ))}
+              </div>
+              <textarea
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                placeholder="Paste info like: Email: alice@example.com\nPhone: +49 123 456789\nNote: Available after 5pm"
+                rows={4}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100 resize-y"
+              />
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  onClick={handleChatSend}
+                  className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+                >
+                  Add to entries
+                </button>
+                <span className="text-[11px] text-slate-400">File import coming soon.</span>
+              </div>
             </div>
           </div>
 

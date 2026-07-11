@@ -20,6 +20,14 @@ export type FillResult = {
 }
 
 // ── helper: find a DOM element by id, name, or label ──────────
+function cssEscape(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value)
+  }
+
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
 function findElement(answer: FieldAnswer): HTMLElement | null {
   // 1. find by id — most reliable
   if (answer.id) {
@@ -27,12 +35,17 @@ function findElement(answer: FieldAnswer): HTMLElement | null {
     if (el) return el
   }
 
-  // 2. find by name attribute
+  // 2. find by name attribute. If the suggestion pipeline only preserved an
+  // original id in the name slot, also try it as an id before falling back.
   if (answer.name) {
+    const escapedName = cssEscape(answer.name)
     const el = document.querySelector<HTMLElement>(
-      `input[name="${answer.name}"], textarea[name="${answer.name}"], select[name="${answer.name}"]`
+      `input[name="${escapedName}"], textarea[name="${escapedName}"], select[name="${escapedName}"]`
     )
     if (el) return el
+
+    const byNameAsId = document.getElementById(answer.name)
+    if (byNameAsId) return byNameAsId
   }
 
   // 3. find by label text — scan all labels and match the "for" attribute
