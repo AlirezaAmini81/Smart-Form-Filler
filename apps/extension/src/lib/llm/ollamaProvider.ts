@@ -50,14 +50,15 @@ export function createOllamaProvider(config: LlmConfig): LlmProvider {
         }
 
         const data = (await response.json()) as { models?: Array<{ name: string }> }
-        const models = data.models ?? []
-        const hasModel = models.some((entry) => entry.name === model)
+        const models = (data.models ?? []).map((entry) => entry.name)
+        const hasModel = models.includes(model)
 
         return {
           available: hasModel,
           label: 'Ollama local',
           details: hasModel ? 'Model available.' : `Model ${model} not installed.`,
-          model
+          model,
+          models
         }
       } catch (error) {
         return {
@@ -87,7 +88,11 @@ export function createOllamaProvider(config: LlmConfig): LlmProvider {
             body: JSON.stringify({
               model,
               prompt: prompt.fullPrompt,
-              stream: false
+              stream: false,
+              format: 'json',
+              options: {
+                temperature: 0
+              }
             })
           },
           timeoutMs

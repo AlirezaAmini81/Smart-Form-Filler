@@ -12,6 +12,7 @@ export interface LlmProviderStatus {
   label: string
   details?: string
   model?: string
+  models?: string[]
 }
 
 export type LlmProviderStatusMap = Record<LlmProviderId, LlmProviderStatus>

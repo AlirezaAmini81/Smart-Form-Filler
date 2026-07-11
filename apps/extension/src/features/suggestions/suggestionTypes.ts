@@ -35,6 +35,8 @@ export interface SuggestionField {
   placeholder?: string
   ariaLabel?: string
   type?: string
+  value?: string
+  options?: string[]
   kind: FormFieldKind
 }
 
@@ -93,6 +95,12 @@ export interface SuggestionGenerationResult {
     model?: string
   }
   warnings: SuggestionWarning[]
+  debug?: {
+    rawOutput?: string
+    parsedResponse?: SuggestionGenerationResponse
+    minimizedFields?: SuggestionField[]
+    minimizedSnippets?: RetrievedKnowledgeSnippet[]
+  }
   metadata: {
     generatedAt: string
     activeProfileId: string
@@ -108,4 +116,6 @@ export interface GenerateSuggestionsForPageInput {
   activeProfileId: string
   providerId: LlmProviderId
   privacyMode: PrivacyMode
+  privacyLevel?: number
+  ollamaModel?: string
 }

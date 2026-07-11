@@ -18,7 +18,7 @@ export interface LlmConfig {
   }
 }
 
-export type LlmConfigUpdate = Partial<LlmConfig> & {
+export type LlmConfigUpdate = Omit<Partial<LlmConfig>, 'requestLimits' | 'ollama' | 'openai'> & {
   requestLimits?: Partial<LlmConfig['requestLimits']>
   ollama?: Partial<LlmConfig['ollama']>
   openai?: Partial<LlmConfig['openai']>
@@ -27,7 +27,7 @@ export type LlmConfigUpdate = Partial<LlmConfig> & {
 const DEFAULT_LLM_CONFIG: LlmConfig = {
   activeProviderId: 'ollama',
   requestLimits: {
-    maxKnowledgeSnippets: 6,
+    maxKnowledgeSnippets: 30,
     maxFieldsPerRequest: 25
   },
   ollama: {

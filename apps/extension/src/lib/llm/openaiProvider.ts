@@ -143,9 +143,11 @@ export function createOpenAiProvider(config: LlmConfig): LlmProvider {
         throw new LlmError('PROVIDER_UNAVAILABLE', String((data as { error?: string }).error))
       }
 
+      const rawText = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
       const parsed = parseSuggestionResponse(data)
       return {
-        response: parsed
+        response: parsed,
+        rawText
       }
     }
   }

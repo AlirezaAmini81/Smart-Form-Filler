@@ -7,6 +7,7 @@ export type FormField = {
   id:          string
   label:       string
   placeholder: string
+  value:       string
   required:    boolean
   options:     string[]
 }
@@ -25,9 +26,9 @@ const NOISE_KEYWORDS = [
   // cookie / consent
   'cookie', 'cookies', 'consent', 'gdpr', 'privacy', 'tracking',
   'einwilligung', 'datenschutz', 'zustimmung',
-  // analytics providers
-  'youtube', 'linkedin', 'piwik', 'google analytics', 'facebook',
-  'twitter', 'instagram', 'tiktok',
+  // analytics providers. Keep social profile names such as LinkedIn/XING fillable;
+  // broad social-network keywords here incorrectly remove application profile fields.
+  'piwik', 'google analytics',
   // overlay/banner ids and class patterns (checked against id/name)
   'cookie-switch', 'cookies-switch', 'cookieswitch',
 ]
@@ -127,6 +128,7 @@ export function extractFormFields(root: Document): ExtractionResult {
       id:          el.id   || '',
       label,
       placeholder: el.placeholder || '',
+      value:       el.type === 'checkbox' || el.type === 'radio' ? (el.checked ? 'true' : '') : (el.value || ''),
       required:    el.required,
       options:     [],
     })
@@ -146,6 +148,7 @@ export function extractFormFields(root: Document): ExtractionResult {
       id:          el.id   || '',
       label,
       placeholder: el.placeholder || '',
+      value:       el.value || '',
       required:    el.required,
       options:     [],
     })
@@ -169,6 +172,7 @@ export function extractFormFields(root: Document): ExtractionResult {
       id:          el.id   || '',
       label,
       placeholder: '',
+      value:       el.selectedOptions[0]?.text?.trim() || '',
       required:    el.required,
       options,
     })

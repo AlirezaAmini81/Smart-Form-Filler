@@ -10,7 +10,9 @@ export const FormFieldMetadataSchema = z.object({
   kind: FormFieldKind,
   label: z.string().optional(),
   placeholder: z.string().optional(),
-  ariaLabel: z.string().optional()
+  ariaLabel: z.string().optional(),
+  value: z.string().optional(),
+  options: z.array(z.string()).optional()
 })
 
 export type FormFieldMetadata = z.infer<typeof FormFieldMetadataSchema>

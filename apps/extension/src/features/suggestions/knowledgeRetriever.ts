@@ -89,7 +89,11 @@ export function createInMemoryKnowledgeRetriever(params?: {
         .sort((a, b) => b.score - a.score)
         .slice(0, maxSnippets)
 
-      return ranked.map(({ entry, score }) => ({
+      const results = ranked.length
+        ? ranked
+        : candidates.slice(0, maxSnippets).map((entry) => ({ entry, score: 0 }))
+
+      return results.map(({ entry, score }) => ({
         id: entry.id,
         profileId: entry.profileId,
         label: entry.label,
@@ -137,7 +141,11 @@ export function createStorageKnowledgeRetriever(params: {
         .sort((a, b) => b.score - a.score)
         .slice(0, maxSnippets)
 
-      return ranked.map(({ entry, score }) => ({
+      const results = ranked.length
+        ? ranked
+        : candidates.slice(0, maxSnippets).map((entry) => ({ entry, score: 0 }))
+
+      return results.map(({ entry, score }) => ({
         id: entry.id,
         profileId: entry.profileId,
         label: entry.label,

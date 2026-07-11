@@ -53,6 +53,8 @@ export function normalizeFormFields(fields: FormFieldInput[]): SuggestionField[]
       placeholder: field.placeholder,
       ariaLabel: field.ariaLabel,
       type: field.type,
+      value: field.value,
+      options: field.options,
       kind: field.kind
     }
   })
@@ -116,6 +118,24 @@ function resolveSensitivity(
   return SENSITIVITY_ORDER[highest]
 }
 
+function resolveSelectOption(
+  field: SuggestionField | undefined,
+  value: string | null
+): string | null {
+  if (!value || field?.kind !== 'select' || !field.options?.length) {
+    return value
+  }
+
+  const normalized = value.toLowerCase()
+  const exact = field.options.find((option) => option.toLowerCase() === normalized)
+  if (exact) {
+    return exact
+  }
+
+  const partial = field.options.find((option) => option.toLowerCase().includes(normalized))
+  return partial ?? value
+}
+
 export function mapProviderSuggestions(params: {
   providerSuggestions: ProviderSuggestion[]
   fields: SuggestionField[]
@@ -154,11 +174,13 @@ export function mapProviderSuggestions(params: {
       warnings.push('User confirmation enforced for safety.')
     }
 
+    const normalizedValue = resolveSelectOption(field, suggestion.suggestedValue)
+
     return {
       fieldId: suggestion.fieldId,
       fieldName,
       fieldLabel,
-      suggestedValue: suggestion.suggestedValue,
+      suggestedValue: normalizedValue,
       valueType: suggestion.valueType,
       confidence: suggestion.confidence,
       reasoningSummary: suggestion.reasoningSummary,
