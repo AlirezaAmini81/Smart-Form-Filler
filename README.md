@@ -48,3 +48,4 @@ OpenAI proxy (optional, cloud mode)
 5. Generate suggestions and confirm the cloud warning is shown.
 
 Cloud mode is optional and disabled by default. Do not use secret profiles in cloud mode.
+# Smart AI Form Filler

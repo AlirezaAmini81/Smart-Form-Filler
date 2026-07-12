@@ -1,12 +1,13 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import type { ActiveProfile, SuggestionSensitivity } from '../features/suggestions/suggestionTypes'
 import type { KnowledgeEntry, StoredKnowledgeBase } from '../features/suggestions/knowledgeTypes'
 import {
   createChromeStorageAdapter,
-  createDemoKnowledgeBase,
   loadStoredKnowledgeBase,
   saveStoredKnowledgeBase
 } from '../features/suggestions/knowledgeStore'
+import { extractTextFromPdf } from '../features/import/pdfTextExtractor'
+import { parseCvText } from '../features/import/pdfCvParser'
 
 // ── types ─────────────────────────────────────────────────────
 type Field = {
@@ -34,16 +35,7 @@ type ChatMessage = {
   content: string
 }
 
-// ── fixed fields ───────────────────────────────────────────────
-const FIELDS: Field[] = [
-  { key: 'name',       label: 'Full name',          placeholder: 'Alice Smith',            required: true  },
-  { key: 'age',        label: 'Age',                placeholder: '30',                     required: true, type: 'number' },
-  { key: 'e-mail',      label: 'E-mail address',      placeholder: 'alice@example.com',      required: true, type: 'email'  },
-  { key: 'phone',      label: 'Phone number',       placeholder: '+49 123 456789',         required: false },
-  { key: 'street',    label: 'Street',             placeholder: '123 Main St',            required: true  },
-  { key: 'postalcode',    label: 'Postal code',       placeholder: '10115',                  required: true  },
-  { key: 'location',    label: 'City',       placeholder: 'Berlin', required: true  }
-]
+// ── fixed fields are grouped below for the UI and combined for storage. ──
 
 // ── helper: make a blank custom entry ─────────────────────────
 const blankEntry = (): CustomEntry => ({
@@ -105,11 +97,31 @@ const parseChatInput = (text: string): CustomEntry[] => {
 
 const STORAGE_SOURCE_ID = 'source_setup_assistant'
 const STORAGE_SOURCE_LABEL = 'Setup Assistant'
+const PDF_SOURCE_ID = 'source_pdf_document_import'
+
+const BASIC_FIELDS: Field[] = [
+  { key: 'name',                 label: 'Full name',          placeholder: 'Alice Smith',                    required: false },
+  { key: 'professional-title',   label: 'Professional title', placeholder: 'Software Engineer',              required: false },
+  { key: 'e-mail',               label: 'E-mail address',     placeholder: 'alice@example.com',              required: false, type: 'email' },
+  { key: 'phone',                label: 'Phone number',       placeholder: '+49 123 456789',                 required: false }
+]
+
+const OPTIONAL_DETAIL_FIELDS: Field[] = [
+  { key: 'location',   label: 'City / location', placeholder: 'Berlin, Germany', required: false },
+  { key: 'street',     label: 'Street address',  placeholder: '123 Main St',    required: false },
+  { key: 'postalcode', label: 'Postal code',     placeholder: '10115',          required: false },
+  { key: 'age',        label: 'Age',             placeholder: '30',             required: false, type: 'number' }
+]
+
+const FIELDS: Field[] = [...BASIC_FIELDS, ...OPTIONAL_DETAIL_FIELDS]
 
 const DEFAULT_FIELD_SENSITIVITY: Record<string, SuggestionSensitivity> = {
-  email: 'sensitive',
+  'e-mail': 'sensitive',
   phone: 'sensitive',
-  address: 'sensitive'
+  street: 'sensitive',
+  postalcode: 'sensitive',
+  location: 'sensitive',
+  age: 'sensitive'
 }
 
 const SENSITIVITY_OPTIONS: SuggestionSensitivity[] = [
@@ -159,6 +171,8 @@ function buildKnowledgeEntries(params: {
   values: Record<string, string>
   entries: CustomEntry[]
   fieldSensitivity: Record<string, SuggestionSensitivity>
+  sourceId: string
+  sourceLabel: string
 }): KnowledgeEntry[] {
   const fixedEntries: KnowledgeEntry[] = FIELDS.flatMap((field) => {
     const value = params.values[field.key]
@@ -172,8 +186,8 @@ function buildKnowledgeEntries(params: {
         profileId: params.profileId,
         label: field.label,
         value: value.trim(),
-        sourceId: STORAGE_SOURCE_ID,
-        sourceLabel: STORAGE_SOURCE_LABEL,
+        sourceId: params.sourceId,
+        sourceLabel: params.sourceLabel,
         sensitivity: params.fieldSensitivity[field.key] ?? inferSensitivity(field.key, field.label)
       }
     ]
@@ -193,8 +207,8 @@ function buildKnowledgeEntries(params: {
         label: title,
         value: content,
         summary: entry.long ? content.slice(0, 120) : undefined,
-        sourceId: STORAGE_SOURCE_ID,
-        sourceLabel: STORAGE_SOURCE_LABEL,
+        sourceId: params.sourceId,
+        sourceLabel: params.sourceLabel,
         sensitivity: entry.sensitivity ?? inferSensitivity(undefined, title)
       }
     ]
@@ -209,13 +223,20 @@ async function upsertKnowledgeBase(params: {
   values: Record<string, string>
   entries: CustomEntry[]
   fieldSensitivity: Record<string, SuggestionSensitivity>
+  sourceId: string
+  sourceLabel: string
 }): Promise<StoredKnowledgeBase> {
   const adapter = createChromeStorageAdapter()
   if (!adapter) {
     throw new Error('chrome.storage.local is not available.')
   }
 
-  const existing = (await loadStoredKnowledgeBase(adapter)) ?? createDemoKnowledgeBase()
+  const existing = (await loadStoredKnowledgeBase(adapter)) ?? {
+    version: 1 as const,
+    updatedAt: new Date().toISOString(),
+    profiles: [],
+    entries: []
+  }
   const profile: ActiveProfile = {
     id: params.accountId,
     name: params.profileName,
@@ -230,7 +251,9 @@ async function upsertKnowledgeBase(params: {
     profileId: profile.id,
     values: params.values,
     entries: params.entries,
-    fieldSensitivity: params.fieldSensitivity
+    fieldSensitivity: params.fieldSensitivity,
+    sourceId: params.sourceId,
+    sourceLabel: params.sourceLabel
   })
 
   const entryLabels = new Set(newEntries.map((entry) => entry.label))
@@ -254,6 +277,7 @@ async function upsertKnowledgeBase(params: {
 
 // ── component ─────────────────────────────────────────────────
 export default function SetupAssistant() {
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [accountId, setAccountId] = useState('')
   const [values, setValues]       = useState<Record<string, string>>({})
   const [fieldSensitivity, setFieldSensitivity] = useState<Record<string, SuggestionSensitivity>>(() =>
@@ -267,6 +291,10 @@ export default function SetupAssistant() {
   const [status, setStatus]       = useState<Status>('idle')
   const [message, setMessage]     = useState('')
   const [saved, setSaved]         = useState<Record<string, unknown> | null>(null)
+  const [pdfImporting, setPdfImporting] = useState(false)
+  const [importSourceLabel, setImportSourceLabel] = useState(STORAGE_SOURCE_LABEL)
+  const [importDetails, setImportDetails] = useState<string | null>(null)
+  const [importWarnings, setImportWarnings] = useState<string[]>([])
 
   // update a fixed field
   const set = (key: string, val: string) =>
@@ -307,19 +335,81 @@ export default function SetupAssistant() {
       createChatMessage('assistant', `Added ${parsed.length} entr${parsed.length === 1 ? 'y' : 'ies'}.`)
     ])
     setChatInput('')
+    setStatus('idle')
     setMessage('')
   }
 
-  // validate required fixed fields before saving
+  const handlePdfSelection = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) {
+      return
+    }
+
+    setPdfImporting(true)
+    setStatus('idle')
+    setMessage('')
+    setImportWarnings([])
+
+    try {
+      const extracted = await extractTextFromPdf(file)
+      const parsed = parseCvText(extracted.text)
+      const importedEntries: CustomEntry[] = parsed.entries.map((entry) => ({
+        id: Math.random().toString(36).slice(2),
+        title: entry.title,
+        content: entry.content,
+        long: entry.long,
+        sensitivity: entry.sensitivity
+      }))
+
+      setValues((previous) => ({ ...previous, ...parsed.values }))
+      setEntries(importedEntries)
+      setImportWarnings(parsed.warnings)
+      setImportSourceLabel(`Imported from ${extracted.fileName}`)
+      setImportDetails(
+        `${extracted.fileName}: ${extracted.processedPages} of ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'} read locally.`
+      )
+
+      if (!accountId.trim() && parsed.profileName) {
+        setAccountId(slugify(parsed.profileName))
+      }
+
+      const truncationWarning = extracted.truncated
+        ? 'Only the first part of this PDF was read. Review the imported information carefully.'
+        : null
+
+      setMessage(
+        `Document imported. Review the detected information, edit anything needed, then save it to your knowledge base.${truncationWarning ? ` ${truncationWarning}` : ''}`
+      )
+    } catch (error) {
+      setImportDetails(null)
+      setImportWarnings([])
+      setMessage(error instanceof Error ? error.message : 'The PDF document could not be imported.')
+      setStatus('error')
+    } finally {
+      setPdfImporting(false)
+    }
+  }
+
+  // A profile needs an ID and at least one useful value. All individual fields are optional.
   const validate = (): string | null => {
     if (!accountId.trim()) return 'Account ID is required'
-    for (const f of FIELDS) {
-      if (f.required && !values[f.key]?.trim()) return `${f.label} is required`
+
+    const hasFixedValue = Object.values(values).some((value) => value.trim())
+    const hasCustomValue = entries.some((entry) => entry.title.trim() && entry.content.trim())
+    if (!hasFixedValue && !hasCustomValue) {
+      return 'Add information manually or import a document before saving.'
     }
-    // if a custom row exists, its title must not be empty
-    for (const e of entries) {
-      if (!e.title.trim()) return 'Each custom entry needs a title'
+
+    for (const entry of entries) {
+      const hasTitle = Boolean(entry.title.trim())
+      const hasContent = Boolean(entry.content.trim())
+      if (hasTitle !== hasContent) {
+        return 'Each additional entry needs both a title and a value.'
+      }
     }
+
     return null
   }
 
@@ -346,24 +436,22 @@ export default function SetupAssistant() {
       profileName,
       ...values,
       ...customFlat,
+      importedFrom: importSourceLabel,
       savedAt: new Date().toISOString(),
     }
 
     try {
-      await chrome.storage.local.set({ [id]: payload })
       await upsertKnowledgeBase({
         accountId: id,
         profileName,
         values,
         entries,
-        fieldSensitivity
+        fieldSensitivity,
+        sourceId: importSourceLabel === STORAGE_SOURCE_LABEL ? STORAGE_SOURCE_ID : PDF_SOURCE_ID,
+        sourceLabel: importSourceLabel
       })
 
-      const result = await chrome.storage.local.get(id)
-      const data   = result[id] as Record<string, unknown> | undefined
-      if (!data) throw new Error('Save appeared to succeed but data not found')
-
-      setSaved(data)
+      setSaved(payload)
       setStatus('success')
       setMessage(`Profile "${profileName}" saved to the knowledge base.`)
 
@@ -382,10 +470,49 @@ export default function SetupAssistant() {
       )
     )
     setEntries([])
+    setChatInput('')
+    setChatLog([])
+    setImportSourceLabel(STORAGE_SOURCE_LABEL)
+    setImportDetails(null)
+    setImportWarnings([])
     setStatus('idle')
     setMessage('')
     setSaved(null)
   }
+
+
+  const renderField = (field: Field) => (
+    <div key={field.key}>
+      <label className="block text-xs font-medium text-slate-700 mb-1">
+        {field.label}
+        {!field.required && <span className="ml-1 text-slate-400 font-normal">(optional)</span>}
+      </label>
+      <input
+        type={field.type || 'text'}
+        value={values[field.key] || ''}
+        onChange={event => set(field.key, event.target.value)}
+        placeholder={field.placeholder}
+        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
+      />
+      <div className="mt-2 flex items-center gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Privacy</span>
+        <select
+          value={fieldSensitivity[field.key] ?? 'normal'}
+          onChange={(event) =>
+            setSensitivity(field.key, event.target.value as SuggestionSensitivity)
+          }
+          className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600"
+          aria-label={`${field.label} privacy`}
+        >
+          {SENSITIVITY_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {SENSITIVITY_LABELS[option]}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  )
 
   // ── success screen ─────────────────────────────────────────
   if (status === 'success' && saved) {
@@ -455,6 +582,46 @@ export default function SetupAssistant() {
 
         <div className="rounded-2xl border border-slate-200/70 bg-white/85 p-6 shadow-sm backdrop-blur space-y-5">
 
+          {/* document PDF import */}
+          <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-semibold text-slate-800">Import document from PDF</div>
+                <p className="mt-1 text-[12px] leading-5 text-slate-600">
+                  Select a text-based PDF document. The original PDF is not uploaded or stored.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={pdfImporting}
+                className="shrink-0 rounded-lg bg-cyan-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {pdfImporting ? 'Reading PDF...' : 'Choose PDF'}
+              </button>
+            </div>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf,.pdf"
+              onChange={handlePdfSelection}
+              className="hidden"
+            />
+
+            {importDetails && (
+              <p className="mt-3 rounded-lg border border-cyan-100 bg-white px-3 py-2 text-[11px] text-cyan-900">
+                {importDetails}
+              </p>
+            )}
+
+            {importWarnings.length > 0 && (
+              <ul className="mt-3 list-disc space-y-1 rounded-lg border border-amber-200 bg-amber-50 px-7 py-2 text-[11px] text-amber-800">
+                {importWarnings.map((warning) => <li key={warning}>{warning}</li>)}
+              </ul>
+            )}
+          </div>
+
           {/* account ID */}
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-2">Account ID</div>
@@ -472,44 +639,32 @@ export default function SetupAssistant() {
 
           <div className="border-t border-slate-100" />
 
-          {/* fixed personal info fields */}
+          {/* main profile fields */}
           <div>
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-3">Personal information</div>
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Basic profile</div>
+                <p className="mt-1 text-[11px] leading-5 text-slate-400">
+                  Imported document data appears here first. You can leave any field empty and fill it manually later.
+                </p>
+              </div>
+            </div>
             <div className="space-y-3">
-              {FIELDS.map(f => (
-                <div key={f.key}>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    {f.label}
-                    {!f.required && <span className="ml-1 text-slate-400 font-normal">(optional)</span>}
-                  </label>
-                  <input
-                    type={f.type || 'text'}
-                    value={values[f.key] || ''}
-                    onChange={e => set(f.key, e.target.value)}
-                    placeholder={f.placeholder}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-                  />
-                  <div className="mt-2 flex items-center gap-2">
-                    <span className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Privacy</span>
-                    <select
-                      value={fieldSensitivity[f.key] ?? 'normal'}
-                      onChange={(event) =>
-                        setSensitivity(f.key, event.target.value as SuggestionSensitivity)
-                      }
-                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-600"
-                      aria-label={`${f.label} privacy`}
-                    >
-                      {SENSITIVITY_OPTIONS.map((option) => (
-                        <option key={option} value={option}>
-                          {SENSITIVITY_LABELS[option]}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              ))}
+              {BASIC_FIELDS.map(renderField)}
             </div>
           </div>
+
+          <details className="rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+            <summary className="cursor-pointer select-none text-xs font-semibold uppercase tracking-widest text-slate-500">
+              Optional address and extra details
+            </summary>
+            <p className="mt-2 text-[11px] leading-5 text-slate-500">
+              These fields are not required.
+            </p>
+            <div className="mt-4 space-y-3">
+              {OPTIONAL_DETAIL_FIELDS.map(renderField)}
+            </div>
+          </details>
 
           <div className="border-t border-slate-100" />
 
@@ -541,7 +696,7 @@ export default function SetupAssistant() {
                       type="text"
                       value={entry.title}
                       onChange={e => updateEntry(entry.id, 'title', e.target.value)}
-                      placeholder="Title  (e.g. Passport number)"
+                      placeholder="Title  (e.g. Skills, Education, Availability)"
                       className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
                     />
                     <button
@@ -591,7 +746,7 @@ export default function SetupAssistant() {
                       type="text"
                       value={entry.content}
                       onChange={e => updateEntry(entry.id, 'content', e.target.value)}
-                      placeholder="Value  (e.g. AB123456)"
+                      placeholder="Value  (e.g. React, Python, remote-friendly)"
                       className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
                     />
                   )}
@@ -656,7 +811,7 @@ export default function SetupAssistant() {
                 >
                   Add to entries
                 </button>
-                <span className="text-[11px] text-slate-400">File import coming soon.</span>
+                <span className="text-[11px] text-slate-400">PDF document import is available above.</span>
               </div>
             </div>
           </div>
