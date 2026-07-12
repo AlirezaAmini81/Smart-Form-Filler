@@ -1,7 +1,7 @@
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url'
+import { validatePdfFile } from './pdfFileValidation'
 
-const MAX_PDF_BYTES = 8 * 1024 * 1024
 const MAX_PDF_PAGES = 12
 const MAX_EXTRACTED_CHARACTERS = 50_000
 const MIN_EXTRACTED_CHARACTERS = 40
@@ -30,10 +30,6 @@ function isTextItem(item: unknown): item is TextItemLike {
   )
 }
 
-function isPdfFile(file: File): boolean {
-  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-}
-
 function userFriendlyPdfError(error: unknown): string {
   const message = error instanceof Error ? error.message : ''
 
@@ -52,17 +48,7 @@ function userFriendlyPdfError(error: unknown): string {
  * The original PDF is never uploaded or stored.
  */
 export async function extractTextFromPdf(file: File): Promise<PdfTextExtractionResult> {
-  if (!isPdfFile(file)) {
-    throw new Error('Please choose a PDF file.')
-  }
-
-  if (file.size === 0) {
-    throw new Error('The selected PDF is empty.')
-  }
-
-  if (file.size > MAX_PDF_BYTES) {
-    throw new Error('Please choose a PDF smaller than 8 MB.')
-  }
+  validatePdfFile(file)
 
   let loadingTask: ReturnType<typeof getDocument> | undefined
 

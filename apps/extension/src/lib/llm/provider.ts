@@ -2,9 +2,9 @@ import type { SuggestionGenerationInput } from '../../features/suggestions/sugge
 import type { LlmProviderId, LlmProviderMode, LlmProviderResponse, LlmProviderStatus } from './types'
 
 export interface LlmProvider {
-  id: LlmProviderId
-  label: string
-  mode: LlmProviderMode
-  getStatus(): Promise<LlmProviderStatus>
+  readonly id: LlmProviderId
+  readonly label: string
+  readonly mode: LlmProviderMode
+  testConnection(): Promise<LlmProviderStatus>
   generateFieldSuggestions(input: SuggestionGenerationInput): Promise<LlmProviderResponse>
 }

@@ -1,13 +1,15 @@
 import type { ActiveProfile, RetrievedKnowledgeSnippet, SuggestionField } from './suggestionTypes'
 import type { KnowledgeEntry } from './knowledgeTypes'
-import type { StorageAdapter } from './knowledgeStore'
+import type { ProfileRepository } from './profileRepository'
 import { DEFAULT_ENTRIES, DEFAULT_PROFILE, DEFAULT_PROFILE_ID } from './knowledgeDefaults'
-import { createChromeStorageAdapter, loadStoredKnowledgeBase } from './knowledgeStore'
+import { createChromeProfileRepository } from './profileRepository'
+import { inferFieldSemantics, inferSemantics, normalizeSemanticText } from './semanticMatching'
 
 export interface KnowledgeRetrievalInput {
   profileId: string
   fields: SuggestionField[]
   maxSnippets: number
+  includeUnmatched?: boolean
 }
 
 export interface KnowledgeRetriever {
@@ -18,9 +20,7 @@ export interface KnowledgeRetriever {
 export { DEFAULT_PROFILE, DEFAULT_PROFILE_ID }
 
 export function normalizeTokens(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
+  return normalizeSemanticText(text)
     .split(' ')
     .map((token) => token.trim())
     .filter((token) => token.length > 1)
@@ -33,6 +33,9 @@ export function scoreEntryForField(entry: KnowledgeEntry, field: SuggestionField
       field.name,
       field.placeholder,
       field.ariaLabel,
+      field.autocomplete,
+      field.title,
+      field.inputMode,
       field.type
     ]
       .filter(Boolean)
@@ -58,6 +61,17 @@ export function scoreEntryForField(entry: KnowledgeEntry, field: SuggestionField
     }
   })
 
+  const fieldSemantics = inferFieldSemantics(field)
+  const entrySemantics = inferSemantics([
+    entry.label,
+    entry.summary,
+    ...(entry.tags ?? []),
+    ...(entry.aliases ?? [])
+  ])
+  if ([...fieldSemantics].some((semantic) => entrySemantics.has(semantic))) {
+    score += 3
+  }
+
   return score
 }
 
@@ -81,17 +95,19 @@ export function createInMemoryKnowledgeRetriever(params?: {
     async getProfile(profileId) {
       return profileMap.get(profileId) ?? null
     },
-    async getRelevantSnippets({ profileId, fields, maxSnippets }) {
+    async getRelevantSnippets({ profileId, fields, maxSnippets, includeUnmatched }) {
       const candidates = entries.filter((entry) => entry.profileId === profileId)
-      const ranked = candidates
+      const scored = candidates
         .map((entry) => ({ entry, score: scoreEntryForFields(entry, fields) }))
+      const ranked = scored
         .filter((result) => result.score > 0)
         .sort((a, b) => b.score - a.score)
-        .slice(0, maxSnippets)
 
-      const results = ranked.length
-        ? ranked
-        : candidates.slice(0, maxSnippets).map((entry) => ({ entry, score: 0 }))
+      const results = includeUnmatched
+        ? scored.sort((a, b) => b.score - a.score).slice(0, maxSnippets)
+        : ranked.length
+          ? ranked.slice(0, maxSnippets)
+          : candidates.slice(0, maxSnippets).map((entry) => ({ entry, score: 0 }))
 
       return results.map(({ entry, score }) => ({
         id: entry.id,
@@ -100,6 +116,7 @@ export function createInMemoryKnowledgeRetriever(params?: {
         value: entry.value,
         summary: entry.summary,
         tags: entry.tags,
+        aliases: entry.aliases,
         sourceId: entry.sourceId,
         sourceLabel: entry.sourceLabel,
         sensitivity: entry.sensitivity,
@@ -110,7 +127,7 @@ export function createInMemoryKnowledgeRetriever(params?: {
 }
 
 export function createStorageKnowledgeRetriever(params: {
-  adapter: StorageAdapter
+  repository: ProfileRepository
   fallbackProfiles?: ActiveProfile[]
   fallbackEntries?: KnowledgeEntry[]
 }): KnowledgeRetriever {
@@ -118,12 +135,12 @@ export function createStorageKnowledgeRetriever(params: {
   const fallbackEntries = params.fallbackEntries ?? DEFAULT_ENTRIES
 
   const resolveProfiles = async () => {
-    const stored = await loadStoredKnowledgeBase(params.adapter)
+    const stored = await params.repository.get()
     return stored?.profiles?.length ? stored.profiles : fallbackProfiles
   }
 
   const resolveEntries = async () => {
-    const stored = await loadStoredKnowledgeBase(params.adapter)
+    const stored = await params.repository.get()
     return stored?.entries?.length ? stored.entries : fallbackEntries
   }
 
@@ -132,18 +149,20 @@ export function createStorageKnowledgeRetriever(params: {
       const profiles = await resolveProfiles()
       return profiles.find((profile) => profile.id === profileId) ?? null
     },
-    async getRelevantSnippets({ profileId, fields, maxSnippets }) {
+    async getRelevantSnippets({ profileId, fields, maxSnippets, includeUnmatched }) {
       const entries = await resolveEntries()
       const candidates = entries.filter((entry) => entry.profileId === profileId)
-      const ranked = candidates
+      const scored = candidates
         .map((entry) => ({ entry, score: scoreEntryForFields(entry, fields) }))
+      const ranked = scored
         .filter((result) => result.score > 0)
         .sort((a, b) => b.score - a.score)
-        .slice(0, maxSnippets)
 
-      const results = ranked.length
-        ? ranked
-        : candidates.slice(0, maxSnippets).map((entry) => ({ entry, score: 0 }))
+      const results = includeUnmatched
+        ? scored.sort((a, b) => b.score - a.score).slice(0, maxSnippets)
+        : ranked.length
+          ? ranked.slice(0, maxSnippets)
+          : candidates.slice(0, maxSnippets).map((entry) => ({ entry, score: 0 }))
 
       return results.map(({ entry, score }) => ({
         id: entry.id,
@@ -152,6 +171,7 @@ export function createStorageKnowledgeRetriever(params: {
         value: entry.value,
         summary: entry.summary,
         tags: entry.tags,
+        aliases: entry.aliases,
         sourceId: entry.sourceId,
         sourceLabel: entry.sourceLabel,
         sensitivity: entry.sensitivity,
@@ -162,10 +182,9 @@ export function createStorageKnowledgeRetriever(params: {
 }
 
 export function createDefaultKnowledgeRetriever(): KnowledgeRetriever {
-  const adapter = createChromeStorageAdapter()
-  if (adapter) {
-    // TODO: Replace with the real knowledge base module after merge.
-    return createStorageKnowledgeRetriever({ adapter })
+  const repository = createChromeProfileRepository()
+  if (repository) {
+    return createStorageKnowledgeRetriever({ repository })
   }
 
   return createInMemoryKnowledgeRetriever()

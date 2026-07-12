@@ -1,43 +1,29 @@
-import type { LlmConfig } from '../config/llmConfig'
+import { z } from 'zod'
+import type { ProviderRuntimeConfig } from '../config/llmConfig'
 import { LlmError } from './errors'
 import type { LlmProvider } from './provider'
 import { buildSuggestionPrompt } from './promptBuilder'
 import { parseSuggestionResponse } from './responseParser'
+import { fetchWithTimeout } from './providerHttp'
 
-async function fetchWithTimeout(
-  url: string,
-  options: RequestInit,
-  timeoutMs: number
-): Promise<Response> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+const TagsSchema = z.object({ models: z.array(z.object({ name: z.string() }).passthrough()).optional() }).passthrough()
+const GenerateSchema = z.object({ response: z.string().optional(), error: z.string().optional() }).passthrough()
 
-  try {
-    return await fetch(url, { ...options, signal: controller.signal })
-  } catch (error) {
-    if (controller.signal.aborted) {
-      throw new LlmError('TIMEOUT', 'Ollama request timed out.')
-    }
-    throw error
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
-export function createOllamaProvider(config: LlmConfig): LlmProvider {
-  const endpoint = config.ollama.endpoint
-  const model = config.ollama.model
-  const timeoutMs = config.ollama.timeoutMs
+export function createOllamaProvider(config: ProviderRuntimeConfig): LlmProvider {
+  const endpoint = config.endpoint ?? 'http://localhost:11434'
+  const model = config.model
+  const timeoutMs = config.timeoutMs
+  const headers: HeadersInit = config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}
 
   return {
     id: 'ollama',
     label: 'Ollama local',
     mode: 'local',
-    async getStatus() {
+    async testConnection() {
       try {
         const response = await fetchWithTimeout(
           `${endpoint}/api/tags`,
-          { method: 'GET' },
+          { method: 'GET', headers },
           timeoutMs
         )
 
@@ -49,7 +35,7 @@ export function createOllamaProvider(config: LlmConfig): LlmProvider {
           }
         }
 
-        const data = (await response.json()) as { models?: Array<{ name: string }> }
+        const data = TagsSchema.parse(await response.json())
         const models = (data.models ?? []).map((entry) => entry.name)
         const hasModel = models.includes(model)
 
@@ -75,6 +61,7 @@ export function createOllamaProvider(config: LlmConfig): LlmProvider {
         fields: input.fields,
         knowledgeSnippets: input.knowledgeSnippets,
         privacyMode: input.privacyMode,
+        suggestionMode: input.suggestionMode,
         injectionWarnings: input.injectionWarnings
       })
 
@@ -84,7 +71,7 @@ export function createOllamaProvider(config: LlmConfig): LlmProvider {
           `${endpoint}/api/generate`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({
               model,
               prompt: prompt.fullPrompt,
@@ -105,18 +92,16 @@ export function createOllamaProvider(config: LlmConfig): LlmProvider {
       }
 
       if (!response.ok) {
-        const errorPayload = (await response.json().catch(() => null)) as
-          | { error?: string }
-          | null
-        if (errorPayload?.error?.toLowerCase().includes('model')) {
+        const errorPayload = GenerateSchema.safeParse(await response.json().catch(() => null))
+        if (errorPayload.success && errorPayload.data.error?.toLowerCase().includes('model')) {
           throw new LlmError('OLLAMA_MODEL_MISSING', `Ollama model ${model} not available.`)
         }
         throw new LlmError('PROVIDER_UNAVAILABLE', 'Ollama returned an error response.')
       }
 
-      let data: { response?: string; error?: string }
+      let data: z.infer<typeof GenerateSchema>
       try {
-        data = (await response.json()) as { response?: string; error?: string }
+        data = GenerateSchema.parse(await response.json())
       } catch (error) {
         throw new LlmError('INVALID_JSON', 'Ollama returned invalid JSON.')
       }

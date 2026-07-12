@@ -19,10 +19,14 @@ export function minimizeFields(
 
   return fields.slice(0, maxFields).map((field) => ({
     id: field.id,
+    locator: field.locator,
     name: truncate(field.name),
     label: truncate(field.label),
     placeholder: truncate(field.placeholder),
     ariaLabel: truncate(field.ariaLabel),
+    autocomplete: truncate(field.autocomplete),
+    title: truncate(field.title),
+    inputMode: truncate(field.inputMode),
     type: truncate(field.type),
     value: truncate(field.value),
     options: field.options
@@ -54,6 +58,7 @@ export function minimizeKnowledgeSnippets(
     value: truncate(snippet.value),
     summary: truncate(snippet.summary),
     tags: snippet.tags,
+    aliases: snippet.aliases,
     sourceId: snippet.sourceId,
     sourceLabel: truncate(snippet.sourceLabel),
     sensitivity: snippet.sensitivity,

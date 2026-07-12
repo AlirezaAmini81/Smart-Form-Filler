@@ -1,11 +1,10 @@
-import { getDefaultLlmConfig, mergeLlmConfig } from '../../lib/config/llmConfig'
-import { createProviderRegistry, getProviderMode } from '../../lib/llm/providerRegistry'
+import { getProviderMode } from '../../lib/llm/providerRegistry'
 import { LlmError } from '../../lib/llm/errors'
 import { minimizeFields, minimizeKnowledgeSnippets } from '../../lib/privacy/dataMinimization'
 import { runPromptInjectionGuards } from '../../lib/privacy/promptInjectionGuards'
 import { applySensitiveDataPolicy } from '../../lib/privacy/sensitiveDataPolicy'
 import type { LlmProviderRegistry } from '../../lib/llm/providerRegistry'
-import type { LlmConfig } from '../../lib/config/llmConfig'
+import type { LlmProviderResponse } from '../../lib/llm/types'
 import type {
   GenerateSuggestionsForPageInput,
   RetrievedKnowledgeSnippet,
@@ -17,15 +16,16 @@ import type { KnowledgeRetriever } from './knowledgeRetriever'
 import { mapProviderSuggestions, normalizeFormFields } from './suggestionMapping'
 import { buildProvenance } from './suggestionProvenance'
 import type { SuggestedFieldValue } from '../../../../../packages/shared/src/schemas'
+import { SuggestionModeSchema } from '../../../../../packages/shared/src/schemas'
+import {
+  inferFieldSemantics,
+  inferSemantics,
+  normalizeSemanticText,
+  resolveFieldSelectValue
+} from './semanticMatching'
 
 function normalizeMatchKey(value?: string): string {
-  if (!value) {
-    return ''
-  }
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
+  return normalizeSemanticText(value)
 }
 
 function slugify(value: string): string {
@@ -172,12 +172,22 @@ function deriveKnowledgeSnippets(
   return derived
 }
 
+function augmentKnowledgeSnippets(
+  snippets: RetrievedKnowledgeSnippet[]
+): RetrievedKnowledgeSnippet[] {
+  const index = new Map(
+    [...snippets, ...deriveKnowledgeSnippets(snippets)].map((snippet) => [snippet.id, snippet])
+  )
+  return Array.from(index.values())
+}
+
 type ExactMatchSnippet = {
   id: string
   profileId: string
   label: string
   value?: string
   tags?: string[]
+  aliases?: string[]
   sourceId: string
   sourceLabel?: string
   sensitivity: string
@@ -196,68 +206,75 @@ function buildExactMatchSuggestions(params: {
   const matched: SuggestedFieldValue[] = []
   const remaining: ReturnType<typeof normalizeFormFields> = []
 
-  const resolveSelectOption = (field: SuggestionField, value: string): string => {
-    if (field.kind !== 'select' || !field.options?.length) {
-      return value
-    }
-
-    const normalized = value.toLowerCase()
-    const exact = field.options.find((option) => option.toLowerCase() === normalized)
-    if (exact) {
-      return exact
-    }
-
-    const partial = field.options.find((option) => option.toLowerCase().includes(normalized))
-    return partial ?? value
-  }
-
   params.fields.forEach((field) => {
+    if (field.type?.toLowerCase() === 'file') {
+      remaining.push(field)
+      return
+    }
     const candidates = [
       field.label,
       field.name,
       field.id,
       field.ariaLabel,
-      field.placeholder
+      field.placeholder,
+      field.autocomplete,
+      field.title,
+      field.inputMode
     ]
       .map(normalizeMatchKey)
       .filter(Boolean)
 
-    let best: any = null
+    const fieldSemantics = inferFieldSemantics(field)
+    let best: { snippet: ExactMatchSnippet; resolvedValue: string; rank: number } | null = null
 
-    snippets.forEach((snippet) => {
+    for (const snippet of snippets) {
+      if (!snippet.value) {
+        continue
+      }
       const snippetLabel = normalizeMatchKey(snippet.label)
-      const tagMatch = snippet.tags?.some((tag) => hasCandidateMatch(candidates, normalizeMatchKey(tag)))
+      const tagMatch = [...(snippet.tags ?? []), ...(snippet.aliases ?? [])]
+        .some((tag) => hasCandidateMatch(candidates, normalizeMatchKey(tag)))
       const labelMatch = snippetLabel && hasCandidateMatch(candidates, snippetLabel)
+      const snippetSemantics = inferSemantics([
+        snippet.label,
+        ...(snippet.tags ?? []),
+        ...(snippet.aliases ?? [])
+      ])
+      const semanticMatch = [...fieldSemantics].some((semantic) => snippetSemantics.has(semantic))
+      const resolvedValue = resolveFieldSelectValue(field, snippet.value)
 
-      if (labelMatch || tagMatch) {
-        if (!best || snippet.score > best.score) {
-          best = snippet
+      if (resolvedValue && (labelMatch || tagMatch || semanticMatch)) {
+        const explicitGenderBonus = fieldSemantics.has('gender') && snippetSemantics.has('gender') ? 2 : 0
+        const rank = snippet.score + (semanticMatch ? 3 : 0) + explicitGenderBonus + (field.kind === 'select' ? 2 : 0)
+        if (!best || rank > best.rank) {
+          best = { snippet, resolvedValue, rank }
         }
       }
-    })
+    }
 
-    if (best?.value) {
+    if (best) {
+      const matchedSnippet = best.snippet
       const fieldLabel =
         field.label ?? field.ariaLabel ?? field.placeholder ?? field.name ?? 'Unknown field'
       const fieldName = field.name ?? field.id
       const provenance = buildProvenance({
         activeProfileId: params.activeProfileId,
-        knowledgeEntryIds: [best.id],
-        sourceIds: [best.sourceId],
+        knowledgeEntryIds: [matchedSnippet.id],
+        sourceIds: [matchedSnippet.sourceId],
         snippetIndex
       })
-      const resolvedValue = resolveSelectOption(field, best.value)
 
       matched.push({
         fieldId: field.id,
+        fieldLocator: field.locator,
         fieldName,
         fieldLabel,
-        suggestedValue: resolvedValue,
+        suggestedValue: best.resolvedValue,
         valueType: 'direct-copy',
         confidence: 'high',
         reasoningSummary: 'Exact match to profile knowledge.',
         provenance,
-        sensitivity: best.sensitivity as SuggestedFieldValue['sensitivity'],
+        sensitivity: matchedSnippet.sensitivity as SuggestedFieldValue['sensitivity'],
         requiresUserConfirmation: true,
         warnings: []
       })
@@ -272,6 +289,7 @@ function buildExactMatchSuggestions(params: {
 function mergeExactAndProviderSuggestions(params: {
   exactSuggestions: SuggestedFieldValue[]
   providerSuggestions: SuggestedFieldValue[]
+  preferProvider?: boolean
 }): SuggestedFieldValue[] {
   const mergedByFieldId = new Map<string, SuggestedFieldValue>()
 
@@ -282,8 +300,15 @@ function mergeExactAndProviderSuggestions(params: {
   params.exactSuggestions.forEach((suggestion) => {
     const providerSuggestion = mergedByFieldId.get(suggestion.fieldId)
 
-    if (!providerSuggestion) {
-      mergedByFieldId.set(suggestion.fieldId, suggestion)
+    if (!providerSuggestion || providerSuggestion.suggestedValue === null) {
+      const fallbackWarnings = providerSuggestion
+        ? [...suggestion.warnings, ...providerSuggestion.warnings, 'Deterministic fallback used.']
+        : suggestion.warnings
+      mergedByFieldId.set(suggestion.fieldId, { ...suggestion, warnings: fallbackWarnings })
+      return
+    }
+
+    if (params.preferProvider) {
       return
     }
 
@@ -292,7 +317,7 @@ function mergeExactAndProviderSuggestions(params: {
       warnings: [
         ...suggestion.warnings,
         ...providerSuggestion.warnings,
-        'Deterministic exact match used; LLM backend also received this field.'
+        'Deterministic match used instead of the provider suggestion.'
       ]
     })
   })
@@ -300,14 +325,41 @@ function mergeExactAndProviderSuggestions(params: {
   return Array.from(mergedByFieldId.values())
 }
 
+function completeSuggestionSet(params: {
+  fields: SuggestionField[]
+  suggestions: SuggestedFieldValue[]
+  activeProfileId: string
+}): SuggestedFieldValue[] {
+  const suggestionsByFieldId = new Map(
+    params.suggestions.map((suggestion) => [suggestion.fieldId, suggestion])
+  )
+
+  return params.fields.map((field) => suggestionsByFieldId.get(field.id) ?? {
+    fieldId: field.id,
+    fieldLocator: field.locator,
+    fieldName: field.name ?? field.id,
+    fieldLabel: field.label ?? field.ariaLabel ?? field.placeholder ?? field.name ?? field.id,
+    suggestedValue: null,
+    valueType: 'unknown',
+    confidence: 'low',
+    reasoningSummary: 'Field detected, but no reliable profile match was found.',
+    provenance: {
+      profileId: params.activeProfileId,
+      knowledgeEntryIds: [],
+      sourceIds: []
+    },
+    sensitivity: 'normal',
+    requiresUserConfirmation: true,
+    warnings: ['No reliable suggestion available.']
+  })
+}
+
 export interface SuggestionEngineDependencies {
   providerRegistry?: LlmProviderRegistry
   knowledgeRetriever?: KnowledgeRetriever
-  config?: LlmConfig
 }
 
 export function createSuggestionEngine(deps: SuggestionEngineDependencies = {}) {
-  const baseConfig = deps.config ?? getDefaultLlmConfig()
   const knowledgeRetriever = deps.knowledgeRetriever ?? createDefaultKnowledgeRetriever()
 
   return {
@@ -316,6 +368,9 @@ export function createSuggestionEngine(deps: SuggestionEngineDependencies = {}) 
     ): Promise<SuggestionGenerationResult> {
       if (!input.activeProfileId) {
         throw new LlmError('NO_ACTIVE_PROFILE', 'No active profile selected.')
+      }
+      if (!SuggestionModeSchema.safeParse(input.suggestionMode).success) {
+        throw new LlmError('SCHEMA_VALIDATION_ERROR', 'Unknown suggestion mode.')
       }
 
       const fields = normalizeFormFields(input.fields)
@@ -327,7 +382,8 @@ export function createSuggestionEngine(deps: SuggestionEngineDependencies = {}) 
       const rawSnippets = await knowledgeRetriever.getRelevantSnippets({
         profileId: input.activeProfileId,
         fields,
-        maxSnippets: baseConfig.requestLimits.maxKnowledgeSnippets
+        maxSnippets: Number.MAX_SAFE_INTEGER,
+        includeUnmatched: true
       })
 
       if (rawSnippets.length === 0) {
@@ -335,30 +391,24 @@ export function createSuggestionEngine(deps: SuggestionEngineDependencies = {}) 
       }
 
       const guardResult = runPromptInjectionGuards(fields)
+      const usesLlm = input.suggestionMode !== 'deterministic-only'
       const providerMode = getProviderMode(input.providerId)
-      const privacyLevel = Number.isFinite(input.privacyLevel)
-        ? Math.min(2, Math.max(0, Math.round(input.privacyLevel ?? 1)))
-        : 1
-      const isLowPrivacy = privacyLevel === 0
-      const isHighPrivacy = privacyLevel === 2
 
-      if (!isLowPrivacy && guardResult.severity === 'high' && providerMode === 'cloud') {
+      if (usesLlm && guardResult.severity === 'high' && providerMode === 'cloud') {
         throw new LlmError(
           'PROMPT_INJECTION_DETECTED',
           'Suspicious prompt injection patterns detected. Cloud mode blocked.'
         )
       }
 
-      const policyResult = isLowPrivacy
+      const policyResult = !usesLlm
         ? {
           allowedSnippets: rawSnippets,
           blockedSnippets: [],
           warnings: [
             {
-              code: 'PRIVACY_LOW',
-              message: providerMode === 'cloud'
-                ? 'Low privacy level: all snippets are included for cloud processing.'
-                : 'Low privacy level: all snippets are included for local processing.'
+              code: 'DETERMINISTIC_ONLY',
+              message: 'Deterministic-only mode: no LLM provider was called.'
             }
           ]
         }
@@ -368,93 +418,82 @@ export function createSuggestionEngine(deps: SuggestionEngineDependencies = {}) 
           promptInjectionDetected: guardResult.hasSuspiciousFields
         })
 
-      const maxSnippets = isLowPrivacy
-        ? rawSnippets.length
-        : isHighPrivacy
-          ? Math.min(baseConfig.requestLimits.maxKnowledgeSnippets, 3)
-          : baseConfig.requestLimits.maxKnowledgeSnippets
-
-      const minimizedSnippets = minimizeKnowledgeSnippets(
+      const localSnippets = augmentKnowledgeSnippets(rawSnippets)
+      const providerSnippets = minimizeKnowledgeSnippets(
         policyResult.allowedSnippets,
-        maxSnippets,
+        policyResult.allowedSnippets.length,
         {
-          allowZeroScore: !isHighPrivacy,
-          skipTruncate: isLowPrivacy
+          allowZeroScore: true,
+          skipTruncate: true
         }
       )
-      if (minimizedSnippets.length === 0) {
-        throw new LlmError('NO_KNOWLEDGE_SNIPPETS', 'All knowledge snippets were filtered out.')
-      }
+      const augmentedProviderSnippets = augmentKnowledgeSnippets(providerSnippets)
 
-      const derivedSnippets = deriveKnowledgeSnippets(minimizedSnippets)
-      const augmentedSnippetIndex = new Map(
-        [...minimizedSnippets, ...derivedSnippets].map((snippet) => [snippet.id, snippet])
-      )
-      const augmentedSnippets = Array.from(augmentedSnippetIndex.values())
+      const minimizedFields = minimizeFields(fields, fields.length, { skipTruncate: true })
 
-      const maxFields = isLowPrivacy
-        ? fields.length
-        : isHighPrivacy
-          ? Math.min(baseConfig.requestLimits.maxFieldsPerRequest, 10)
-          : baseConfig.requestLimits.maxFieldsPerRequest
-
-      const minimizedFields = minimizeFields(fields, maxFields, { skipTruncate: isLowPrivacy })
-
-      if (input.providerId === 'openai' && input.privacyMode !== 'cloud-opt-in') {
+      if (usesLlm && input.providerId === 'openai' && input.privacyMode !== 'cloud-opt-in') {
         throw new LlmError(
           'CLOUD_MODE_DISABLED',
           'Cloud mode is disabled. Enable opt-in to use OpenAI.'
         )
       }
 
-      const resolvedConfig = mergeLlmConfig(baseConfig, {
-        openai: {
-          cloudEnabled: input.privacyMode === 'cloud-opt-in'
-        },
-        ...(input.ollamaModel
-          ? {
-            ollama: {
-              model: input.ollamaModel
-            }
-          }
-          : {})
-      })
-
-      const { matched: exactSuggestions } = buildExactMatchSuggestions({
+      const { matched: exactSuggestions, remaining } = buildExactMatchSuggestions({
         fields: minimizedFields,
-        snippets: augmentedSnippets,
+        snippets: localSnippets,
         activeProfileId: profile.id
       })
 
-      const registry = deps.providerRegistry ?? createProviderRegistry(resolvedConfig)
-      const provider = registry.getProvider(input.providerId)
-
-      let providerResponse: Awaited<ReturnType<typeof provider.generateFieldSuggestions>> | null = null
+      let providerResponse: LlmProviderResponse | null = null
       let providerSuggestions: SuggestedFieldValue[] = []
+      let providerResultMode: SuggestionGenerationResult['provider']['mode'] = 'none'
+      const llmEligibleFields = minimizedFields.filter(
+        (field) => field.type?.toLowerCase() !== 'file'
+      )
+      const providerFields = input.suggestionMode === 'full-context'
+        ? llmEligibleFields
+        : input.suggestionMode === 'identifier-only'
+          ? remaining.filter((field) => field.type?.toLowerCase() !== 'file')
+          : []
+      const requestFields = augmentedProviderSnippets.length > 0 ? providerFields : []
 
-      if (minimizedFields.length > 0) {
+      if (requestFields.length > 0) {
+        const registry = deps.providerRegistry
+        if (!registry) throw new LlmError('PROVIDER_UNAVAILABLE', 'Provider runtime is unavailable.')
+        const provider = registry.getProvider(input.providerId)
+        providerResultMode = provider.mode
         providerResponse = await provider.generateFieldSuggestions({
           pageContext: input.pageContext,
           activeProfile: profile,
-          fields: minimizedFields,
-          knowledgeSnippets: augmentedSnippets,
+          fields: requestFields,
+          knowledgeSnippets: augmentedProviderSnippets,
           privacyMode: input.privacyMode,
           providerId: input.providerId,
+          suggestionMode: input.suggestionMode as 'full-context' | 'identifier-only',
           injectionWarnings: guardResult.warnings
         })
 
         providerSuggestions = mapProviderSuggestions({
           providerSuggestions: providerResponse.response.suggestions,
-          fields: minimizedFields,
-          knowledgeSnippets: augmentedSnippets,
+          fields: requestFields,
+          knowledgeSnippets: augmentedProviderSnippets,
           activeProfileId: profile.id,
+          suggestionMode: input.suggestionMode as 'full-context' | 'identifier-only',
           fieldWarnings: guardResult.fieldWarnings
         })
       }
 
-      const suggestions = mergeExactAndProviderSuggestions({
-        exactSuggestions,
-        providerSuggestions
+      const partialSuggestions = input.suggestionMode === 'deterministic-only'
+        ? exactSuggestions
+        : mergeExactAndProviderSuggestions({
+          exactSuggestions,
+          providerSuggestions,
+          preferProvider: input.suggestionMode === 'full-context'
+        })
+      const suggestions = completeSuggestionSet({
+        fields: minimizedFields,
+        suggestions: partialSuggestions,
+        activeProfileId: profile.id
       })
 
       const warnings = [
@@ -469,23 +508,21 @@ export function createSuggestionEngine(deps: SuggestionEngineDependencies = {}) 
       return {
         suggestions,
         provider: {
-          id: provider.id,
-          mode: provider.mode,
+          id: input.providerId,
+          mode: providerResultMode,
           model: providerResponse?.model
         },
         warnings,
         debug: {
-          rawOutput: providerResponse?.rawText,
-          parsedResponse: providerResponse?.response,
-          minimizedFields,
-          minimizedSnippets: augmentedSnippets
+          minimizedFields: requestFields,
+          minimizedSnippets: usesLlm ? augmentedProviderSnippets : localSnippets
         },
         metadata: {
           generatedAt: new Date().toISOString(),
           activeProfileId: profile.id,
           fieldsReceived: fields.length,
           suggestionsReturned: suggestions.length,
-          knowledgeSnippetsUsed: augmentedSnippets.length
+          knowledgeSnippetsUsed: usesLlm ? augmentedProviderSnippets.length : localSnippets.length
         }
       }
     }

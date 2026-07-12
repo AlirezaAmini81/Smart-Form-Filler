@@ -3,9 +3,11 @@ import type {
   FormFieldInput,
   ProviderSuggestion,
   RetrievedKnowledgeSnippet,
-  SuggestionField
+  SuggestionField,
+  SuggestionMode
 } from './suggestionTypes'
 import { buildProvenance } from './suggestionProvenance'
+import { resolveFieldSelectValue } from './semanticMatching'
 
 const SENSITIVITY_ORDER = ['public', 'normal', 'sensitive', 'secret'] as const
 
@@ -48,10 +50,14 @@ export function normalizeFormFields(fields: FormFieldInput[]): SuggestionField[]
 
     return {
       id: fieldId,
+      locator: field.locator,
       name: field.name,
       label: field.label,
       placeholder: field.placeholder,
       ariaLabel: field.ariaLabel,
+      autocomplete: field.autocomplete,
+      title: field.title,
+      inputMode: field.inputMode,
       type: field.type,
       value: field.value,
       options: field.options,
@@ -118,43 +124,31 @@ function resolveSensitivity(
   return SENSITIVITY_ORDER[highest]
 }
 
-function resolveSelectOption(
-  field: SuggestionField | undefined,
-  value: string | null
-): string | null {
-  if (!value || field?.kind !== 'select' || !field.options?.length) {
-    return value
-  }
-
-  const normalized = value.toLowerCase()
-  const exact = field.options.find((option) => option.toLowerCase() === normalized)
-  if (exact) {
-    return exact
-  }
-
-  const partial = field.options.find((option) => option.toLowerCase().includes(normalized))
-  return partial ?? value
-}
-
 export function mapProviderSuggestions(params: {
   providerSuggestions: ProviderSuggestion[]
   fields: SuggestionField[]
   knowledgeSnippets: RetrievedKnowledgeSnippet[]
   activeProfileId: string
+  suggestionMode?: Exclude<SuggestionMode, 'deterministic-only'>
   fieldWarnings?: Record<string, string[]>
 }): SuggestedFieldValue[] {
   const fieldIndex = new Map(params.fields.map((field) => [field.id, field]))
   const snippetIndex = new Map(params.knowledgeSnippets.map((snippet) => [snippet.id, snippet]))
 
-  return params.providerSuggestions.map((suggestion) => {
+  return params.providerSuggestions.flatMap((suggestion): SuggestedFieldValue[] => {
     const field = fieldIndex.get(suggestion.fieldId)
+    if (!field) {
+      return []
+    }
     const fieldLabel =
       field?.label ?? field?.ariaLabel ?? field?.placeholder ?? field?.name ?? 'Unknown field'
     const fieldName = field?.name ?? field?.id
 
+    const knownKnowledgeEntryIds = suggestion.knowledgeEntryIds.filter((id) => snippetIndex.has(id))
+    const unknownKnowledgeEntryIds = suggestion.knowledgeEntryIds.filter((id) => !snippetIndex.has(id))
     const resolvedSensitivity = resolveSensitivity(
       suggestion.sensitivity as Sensitivity,
-      suggestion.knowledgeEntryIds,
+      knownKnowledgeEntryIds,
       snippetIndex
     )
 
@@ -164,8 +158,8 @@ export function mapProviderSuggestions(params: {
       warnings.push(...fieldWarningList)
     }
 
-    if (!field) {
-      warnings.push('Field id was not found in the request payload.')
+    if (unknownKnowledgeEntryIds.length > 0) {
+      warnings.push('Suggestion referenced unknown knowledge entry ids.')
     }
 
     let requiresUserConfirmation = suggestion.requiresUserConfirmation
@@ -174,25 +168,58 @@ export function mapProviderSuggestions(params: {
       warnings.push('User confirmation enforced for safety.')
     }
 
-    const normalizedValue = resolveSelectOption(field, suggestion.suggestedValue)
+    let candidateValue = suggestion.suggestedValue
+    let valueType = suggestion.valueType
+    if (params.suggestionMode === 'identifier-only') {
+      candidateValue = null
+      valueType = 'direct-copy'
+      if (knownKnowledgeEntryIds.length === 1) {
+        candidateValue = snippetIndex.get(knownKnowledgeEntryIds[0])?.value ?? null
+      } else if (knownKnowledgeEntryIds.length > 1) {
+        warnings.push('Identifier-only mode cannot compose values from multiple entries.')
+      }
+      if (!candidateValue && knownKnowledgeEntryIds.length > 0) {
+        warnings.push('Mapped knowledge entry has no locally available value.')
+      }
+    } else if (candidateValue && knownKnowledgeEntryIds.length === 0) {
+      candidateValue = null
+      warnings.push('Suggestion value was rejected because it had no known knowledge provenance.')
+    }
+    if (field.type?.toLowerCase() === 'file') {
+      candidateValue = null
+      warnings.push('File inputs require manual user selection and cannot be suggested.')
+    }
 
-    return {
+    const normalizedValue = candidateValue && field
+      ? resolveFieldSelectValue(field, candidateValue)
+      : candidateValue
+    if (candidateValue && field?.kind === 'select' && !normalizedValue) {
+      warnings.push('Suggested value does not match a supported select option.')
+    }
+    const knownSourceIds = Array.from(new Set(
+      knownKnowledgeEntryIds
+        .map((id) => snippetIndex.get(id)?.sourceId)
+        .filter((id): id is string => Boolean(id))
+    ))
+
+    return [{
       fieldId: suggestion.fieldId,
+      fieldLocator: field?.locator,
       fieldName,
       fieldLabel,
       suggestedValue: normalizedValue,
-      valueType: suggestion.valueType,
+      valueType,
       confidence: suggestion.confidence,
       reasoningSummary: suggestion.reasoningSummary,
       provenance: buildProvenance({
         activeProfileId: params.activeProfileId,
-        knowledgeEntryIds: suggestion.knowledgeEntryIds,
-        sourceIds: suggestion.sourceIds,
+        knowledgeEntryIds: knownKnowledgeEntryIds,
+        sourceIds: knownSourceIds,
         snippetIndex
       }),
       sensitivity: resolvedSensitivity,
       requiresUserConfirmation,
       warnings
-    }
+    }]
   })
 }

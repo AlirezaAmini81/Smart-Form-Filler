@@ -2,13 +2,17 @@ import type {
   FormFieldMetadata,
   SuggestedFieldValue,
   SuggestionConfidence,
+  SuggestionMode,
   SuggestionSensitivity,
   SuggestionValueType
 } from '../../../../../packages/shared/src/schemas'
+import type { ProfileMetadata } from './knowledgeTypes'
+import type { ProviderId } from '../../lib/llm/providerCatalog'
 
 export type { SuggestionConfidence, SuggestionSensitivity, SuggestionValueType }
+export type { SuggestionMode }
 
-export type LlmProviderId = 'ollama' | 'openai'
+export type LlmProviderId = ProviderId
 export type LlmProviderMode = 'local' | 'cloud'
 export type PrivacyMode = 'local-only' | 'cloud-opt-in'
 
@@ -22,18 +26,18 @@ export interface PageContext {
   language?: string
 }
 
-export interface ActiveProfile {
-  id: string
-  name: string
-  sensitivity: SuggestionSensitivity
-}
+export type ActiveProfile = ProfileMetadata
 
 export interface SuggestionField {
   id: string
+  locator?: string
   name?: string
   label?: string
   placeholder?: string
   ariaLabel?: string
+  autocomplete?: string
+  title?: string
+  inputMode?: string
   type?: string
   value?: string
   options?: string[]
@@ -47,6 +51,7 @@ export interface RetrievedKnowledgeSnippet {
   value?: string
   summary?: string
   tags?: string[]
+  aliases?: string[]
   sourceId: string
   sourceLabel?: string
   sensitivity: SuggestionSensitivity
@@ -66,6 +71,7 @@ export interface SuggestionGenerationInput {
   knowledgeSnippets: RetrievedKnowledgeSnippet[]
   privacyMode: PrivacyMode
   providerId: LlmProviderId
+  suggestionMode: Exclude<SuggestionMode, 'deterministic-only'>
   injectionWarnings?: SuggestionWarning[]
 }
 
@@ -91,7 +97,7 @@ export interface SuggestionGenerationResult {
   suggestions: SuggestedFieldValue[]
   provider: {
     id: LlmProviderId
-    mode: LlmProviderMode
+    mode: LlmProviderMode | 'none'
     model?: string
   }
   warnings: SuggestionWarning[]
@@ -116,6 +122,5 @@ export interface GenerateSuggestionsForPageInput {
   activeProfileId: string
   providerId: LlmProviderId
   privacyMode: PrivacyMode
-  privacyLevel?: number
-  ollamaModel?: string
+  suggestionMode: SuggestionMode
 }

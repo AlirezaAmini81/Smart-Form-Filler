@@ -1,18 +1,55 @@
+import { z } from 'zod'
+import { SuggestionSensitivitySchema } from '../../../../../packages/shared/src/schemas'
 import type { SuggestionSensitivity } from '../suggestions/suggestionTypes'
 
-export type ParsedCvEntry = {
-  title: string
-  content: string
-  long: boolean
-  sensitivity: SuggestionSensitivity
-}
+export const ParsedCvEntrySchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    content: z.string().trim().min(1).max(8_000),
+    long: z.boolean(),
+    sensitivity: SuggestionSensitivitySchema
+  })
+  .strict()
 
-export type ParsedCvData = {
-  profileName?: string
-  values: Record<string, string>
-  entries: ParsedCvEntry[]
-  warnings: string[]
-}
+export const ParsedCvDataSchema = z
+  .object({
+    profileName: z.string().trim().min(1).max(200).optional(),
+    values: z
+      .object({
+        name: z.string().trim().min(1).max(200).optional(),
+        'first-name': z.string().trim().min(1).max(100).optional(),
+        'last-name': z.string().trim().min(1).max(100).optional(),
+        'date-of-birth': z.string().trim().min(1).max(100).optional(),
+        age: z.string().trim().min(1).max(20).optional(),
+        gender: z.string().trim().min(1).max(100).optional(),
+        salutation: z.string().trim().min(1).max(100).optional(),
+        nationality: z.string().trim().min(1).max(100).optional(),
+        'marital-status': z.string().trim().min(1).max(100).optional(),
+        'professional-title': z.string().trim().min(1).max(300).optional(),
+        'e-mail': z.string().trim().min(1).max(320).optional(),
+        phone: z.string().trim().min(1).max(100).optional(),
+        'mobile-phone': z.string().trim().min(1).max(100).optional(),
+        location: z.string().trim().min(1).max(500).optional(),
+        'street-address': z.string().trim().min(1).max(500).optional(),
+        'postal-code': z.string().trim().min(1).max(100).optional(),
+        city: z.string().trim().min(1).max(200).optional(),
+        state: z.string().trim().min(1).max(200).optional(),
+        country: z.string().trim().min(1).max(200).optional(),
+        'full-address': z.string().trim().min(1).max(500).optional()
+      })
+      .strict(),
+    entries: z.array(ParsedCvEntrySchema).max(100),
+    warnings: z.array(z.string().trim().min(1).max(500)).max(20)
+  })
+  .strict()
+  .superRefine((data, context) => {
+    if (Object.keys(data.values).length === 0 && data.entries.length === 0) {
+      context.addIssue({ code: 'custom', message: 'No usable profile data was extracted.' })
+    }
+  })
+
+export type ParsedCvEntry = z.infer<typeof ParsedCvEntrySchema>
+export type ParsedCvData = z.infer<typeof ParsedCvDataSchema>
 
 type SectionDefinition = {
   title: string
@@ -40,6 +77,10 @@ const SECTION_DEFINITIONS: SectionDefinition[] = [
       'executive summary',
       'overview'
     ]
+  },
+  {
+    title: 'Current Employment',
+    aliases: ['current employment', 'current position', 'current role', 'employment details']
   },
   {
     title: 'Skills',
@@ -148,6 +189,18 @@ const SECTION_DEFINITIONS: SectionDefinition[] = [
     aliases: ['languages', 'language skills', 'language proficiency']
   },
   {
+    title: 'Application Information',
+    aliases: ['application information', 'application details', 'job preferences', 'role preferences']
+  },
+  {
+    title: 'Standard Answers',
+    aliases: ['standard answers', 'application answers', 'common questions']
+  },
+  {
+    title: 'Availability',
+    aliases: ['availability', 'interview availability']
+  },
+  {
     title: 'Interests',
     sensitivity: 'public',
     aliases: ['interests', 'hobbies', 'personal interests']
@@ -158,6 +211,7 @@ const CONTACT_HEADING_ALIASES = new Set([
   'contact',
   'contact information',
   'personal information',
+  'address',
   'details',
   'personal details',
   'contact details'
@@ -175,7 +229,7 @@ function normalizeText(text: string): string {
 
 function stripListPrefix(line: string): string {
   return line
-    .replace(/^[•▪◦●◆▶*]+\s*/, '')
+    .replace(/^[·•▪◦●◆▶*]+\s*/, '')
     .replace(/^\d{1,2}[.)]\s+/, '')
     .trim()
 }
@@ -248,7 +302,7 @@ function isLikelyHeading(line: string): boolean {
 function compactSection(lines: string[]): string {
   const normalized = lines
     .map(cleanLine)
-    .filter(Boolean)
+    .filter((line) => line && !/entirely synthetic information for testing purposes/i.test(line))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
@@ -320,7 +374,7 @@ function findWebsite(text: string): string | undefined {
 }
 
 function findLabeledValue(lines: string[], labels: string[]): string | undefined {
-  for (const line of lines.slice(0, 30)) {
+  for (const line of lines) {
     const match = line.match(/^\s*([^:|]{2,45})\s*[:|]\s*(.+)$/)
     if (!match) {
       continue
@@ -331,6 +385,72 @@ function findLabeledValue(lines: string[], labels: string[]): string | undefined
     }
   }
   return undefined
+}
+
+const RESERVED_LABELED_FIELDS = new Set([
+  'name', 'full name', 'first name', 'given name', 'forename', 'last name', 'family name', 'surname',
+  'date of birth', 'birth date', 'birthday', 'dob', 'age', 'gender', 'sex', 'salutation',
+  'form of address', 'honorific', 'nationality', 'citizenship', 'marital status', 'civil status',
+  'email', 'e mail', 'email address', 'phone', 'telephone', 'tel', 'phone number', 'mobile',
+  'mobile phone', 'mobile number', 'cell', 'cell phone', 'street', 'street address', 'address line 1',
+  'postal code', 'postcode', 'zip', 'zip code', 'city', 'town', 'state', 'province', 'region',
+  'country', 'country of residence', 'full address', 'mailing address', 'postal address', 'location',
+  'based in', 'title', 'role', 'position', 'job title', 'professional title', 'website', 'portfolio',
+  'personal website', 'web', 'linkedin', 'linkedin profile', 'github', 'github profile'
+])
+
+function sensitivityForLabel(label: string): SuggestionSensitivity {
+  return /(salary|compensation|current location|home address|tax|bank|passport|identification)/.test(label)
+    ? 'sensitive'
+    : 'normal'
+}
+
+function readLabeledEntries(lines: string[]): ParsedCvEntry[] {
+  const entries: ParsedCvEntry[] = []
+  for (const line of lines) {
+    if (/^(?:https?|mailto):/i.test(line)) {
+      continue
+    }
+    const match = line.match(/^([^:]{2,80})\s*:\s*(.+)$/)
+    if (!match) {
+      continue
+    }
+
+    const label = headingKey(match[1])
+    const content = match[2].trim()
+    if (!label || !content || RESERVED_LABELED_FIELDS.has(label) || findSectionDefinition(label)) {
+      continue
+    }
+
+    pushUniqueEntry(entries, toEntry(cleanLine(match[1]), content, sensitivityForLabel(label)))
+  }
+  return entries
+}
+
+function readQuestionAnswers(content: string): ParsedCvEntry[] {
+  const entries: ParsedCvEntry[] = []
+  let question: string | undefined
+  let answerLines: string[] = []
+
+  const flush = () => {
+    const answer = answerLines.join(' ').replace(/\s+/g, ' ').trim()
+    if (question && answer) {
+      pushUniqueEntry(entries, toEntry(question, answer))
+    }
+    answerLines = []
+  }
+
+  for (const line of content.split('\n').map(cleanLine).filter(Boolean)) {
+    if (line.endsWith('?')) {
+      flush()
+      question = line
+    } else if (question) {
+      answerLines.push(line)
+    }
+  }
+  flush()
+
+  return entries
 }
 
 function findLocation(lines: string[]): string | undefined {
@@ -442,19 +562,96 @@ export function parseCvText(rawText: string): ParsedCvData {
     values.name = profileName
   }
 
+  const firstName = findLabeledValue(lines, ['first name', 'given name', 'forename'])
+  if (firstName) {
+    values['first-name'] = firstName
+  }
+
+  const lastName = findLabeledValue(lines, ['last name', 'family name', 'surname'])
+  if (lastName) {
+    values['last-name'] = lastName
+  }
+
+  const dateOfBirth = findLabeledValue(lines, ['date of birth', 'birth date', 'birthday', 'dob'])
+  if (dateOfBirth) {
+    values['date-of-birth'] = dateOfBirth
+  }
+
+  const age = findLabeledValue(lines, ['age'])
+  if (age) {
+    values.age = age
+  }
+
+  const gender = findLabeledValue(lines, ['gender', 'sex'])
+  if (gender) {
+    values.gender = gender
+  }
+
+  const salutation = findLabeledValue(lines, ['salutation', 'form of address', 'honorific'])
+  if (salutation) {
+    values.salutation = salutation
+  }
+
+  const nationality = findLabeledValue(lines, ['nationality', 'citizenship'])
+  if (nationality) {
+    values.nationality = nationality
+  }
+
+  const maritalStatus = findLabeledValue(lines, ['marital status', 'civil status'])
+  if (maritalStatus) {
+    values['marital-status'] = maritalStatus
+  }
+
   const email = findLabeledValue(lines, ['email', 'e mail', 'email address']) ?? findEmail(text)
   if (email) {
     values['e-mail'] = email
   }
 
-  const phone = findLabeledValue(lines, ['phone', 'mobile', 'telephone', 'tel', 'phone number', 'mobile number']) ?? findPhone(text)
+  const phone = findLabeledValue(lines, ['phone', 'telephone', 'tel', 'phone number']) ?? findPhone(text)
   if (phone) {
     values.phone = phone
   }
 
-  const location = findLocation(lines)
-  if (location) {
-    values.location = location
+  const mobilePhone = findLabeledValue(lines, ['mobile', 'mobile phone', 'mobile number', 'cell', 'cell phone'])
+  if (mobilePhone) {
+    values['mobile-phone'] = mobilePhone
+  }
+
+  const streetAddress = findLabeledValue(lines, ['street', 'street address', 'address line 1'])
+  if (streetAddress) {
+    values['street-address'] = streetAddress
+  }
+
+  const postalCode = findLabeledValue(lines, ['postal code', 'postcode', 'zip', 'zip code'])
+  if (postalCode) {
+    values['postal-code'] = postalCode
+  }
+
+  const city = findLabeledValue(lines, ['city', 'town'])
+  if (city) {
+    values.city = city
+  }
+
+  const state = findLabeledValue(lines, ['state', 'province', 'region'])
+  if (state) {
+    values.state = state
+  }
+
+  const country = findLabeledValue(lines, ['country', 'country of residence'])
+  if (country) {
+    values.country = country
+  }
+
+  const fullAddress = findLabeledValue(lines, ['full address', 'mailing address', 'postal address'])
+  if (fullAddress) {
+    values['full-address'] = fullAddress
+  }
+
+  if (!city && !streetAddress && !postalCode && !fullAddress) {
+    const location = findLocation(lines)
+    if (location) {
+      values.location = location
+    }
   }
 
   const professionalTitle = findProfessionalTitle(lines, profileName)
@@ -479,10 +676,22 @@ export function parseCvText(rawText: string): ParsedCvData {
     pushUniqueEntry(entries, toEntry('Website / portfolio', website, 'public'))
   }
 
+  for (const entry of readLabeledEntries(lines)) {
+    pushUniqueEntry(entries, entry)
+  }
+
   const sections = readSections(lines)
   for (const definition of SECTION_DEFINITIONS) {
     const content = sections.get(definition.title)
-    if (content) {
+    if (definition.title === 'Standard Answers' && content) {
+      const answers = readQuestionAnswers(content)
+      for (const entry of answers) {
+        pushUniqueEntry(entries, entry)
+      }
+      if (answers.length === 0) {
+        pushUniqueEntry(entries, toEntry(definition.title, content))
+      }
+    } else if (content && !['Current Employment', 'Application Information'].includes(definition.title)) {
       pushUniqueEntry(entries, toEntry(definition.title, content, definition.sensitivity ?? 'normal'))
     }
   }
@@ -501,10 +710,10 @@ export function parseCvText(rawText: string): ParsedCvData {
     warnings.push('No standard CV sections were recognized. You can still edit the extracted form manually.')
   }
 
-  return {
+  return ParsedCvDataSchema.parse({
     profileName,
     values,
     entries,
     warnings
-  }
+  })
 }

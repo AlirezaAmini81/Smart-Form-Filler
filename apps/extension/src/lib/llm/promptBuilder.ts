@@ -5,6 +5,7 @@ import type {
   PrivacyMode,
   RetrievedKnowledgeSnippet,
   SuggestionField,
+  SuggestionMode,
   SuggestionWarning
 } from '../../features/suggestions/suggestionTypes'
 
@@ -20,6 +21,7 @@ export function buildSuggestionPrompt(params: {
   fields: SuggestionField[]
   knowledgeSnippets: RetrievedKnowledgeSnippet[]
   privacyMode: PrivacyMode
+  suggestionMode: Exclude<SuggestionMode, 'deterministic-only'>
   injectionWarnings?: SuggestionWarning[]
 }): PromptSections {
   const injectionNotes = params.injectionWarnings?.length
@@ -29,13 +31,28 @@ export function buildSuggestionPrompt(params: {
         .join(', ')}.`
     : 'No prompt injection warnings detected.'
 
+  const identifierOnly = params.suggestionMode === 'identifier-only'
+  const modeInstructions = identifierOnly
+    ? [
+        'Map each unresolved form field to at most one trusted knowledge snippet id.',
+        'Knowledge values are intentionally withheld and will be resolved locally.',
+        'Set suggestedValue to null. Do not infer, compose, or generate personal values.',
+        'Use knowledgeEntryIds to return the selected snippet id, or an empty array when unsure.'
+      ]
+    : [
+        'Use one or more trusted snippets when a field requires combined information.',
+        'You may derive, combine, or normalize values, including date formatting requested by field context.',
+        'Every non-null value must cite all supporting knowledgeEntryIds.'
+      ]
+
   const system = [
     `${PROMPT_SECTION_TRUSTED}`,
     'You are a form suggestion assistant.',
     'Only use the trusted knowledge snippets provided.',
     'Do not invent personal data that is not supported by the trusted knowledge.',
-    'You may derive or normalize values from trusted knowledge (e.g., split a full name, parse an address, format a date).',
+    ...modeInstructions,
     'If a field provides options (for select/dropdown), choose exactly one option text from that list.',
+    'Treat common salutations as evidence for compatible gender-valued options when no explicit gender fact is available (for example Mr/Herr -> male/männlich and Ms/Mrs/Frau -> female/weiblich).',
     'Use valueType=direct-copy for exact copies, normalized for formatting/parsing, generated for composed values.',
     'Return JSON only with no markdown or extra text.',
     'The JSON must match the output schema exactly with no extra keys.',
@@ -44,37 +61,47 @@ export function buildSuggestionPrompt(params: {
     'Always include knowledgeEntryIds and sourceIds for every suggestion.',
     'Always set requiresUserConfirmation to true.',
     `Privacy mode: ${params.privacyMode}.`,
+    `Suggestion mode: ${params.suggestionMode}.`,
     injectionNotes
   ].join('\n')
 
   const knowledgePayload = {
     activeProfile: {
       id: params.activeProfile.id,
-      name: params.activeProfile.name,
+      name: identifierOnly ? undefined : params.activeProfile.name,
       sensitivity: params.activeProfile.sensitivity
     },
     knowledgeSnippets: params.knowledgeSnippets.map((snippet) => ({
       id: snippet.id,
       label: snippet.label,
-      value: snippet.value,
-      summary: snippet.summary,
+      value: identifierOnly ? undefined : snippet.value,
+      summary: identifierOnly ? undefined : snippet.summary,
       tags: snippet.tags,
+      aliases: snippet.aliases,
       sourceId: snippet.sourceId,
-      sourceLabel: snippet.sourceLabel,
+      sourceLabel: identifierOnly ? undefined : snippet.sourceLabel,
       sensitivity: snippet.sensitivity
     }))
   }
 
   const untrustedPayload = {
-    pageContext: params.pageContext,
+    pageContext: identifierOnly
+      ? {
+          hostname: params.pageContext.hostname,
+          language: params.pageContext.language
+        }
+      : params.pageContext,
     fields: params.fields.map((field) => ({
       fieldId: field.id,
       name: field.name,
       label: field.label,
       placeholder: field.placeholder,
       ariaLabel: field.ariaLabel,
+      autocomplete: field.autocomplete,
+      title: field.title,
+      inputMode: field.inputMode,
       type: field.type,
-      value: field.value,
+      value: identifierOnly ? undefined : field.value,
       kind: field.kind,
       options: field.options
     }))
@@ -98,7 +125,7 @@ export function buildSuggestionPrompt(params: {
         suggestions: [
           {
             fieldId: 'field_1',
-            suggestedValue: 'Example',
+            suggestedValue: identifierOnly ? null : 'Example',
             valueType: 'direct-copy',
             confidence: 'high',
             reasoningSummary: 'Short user-facing rationale.',

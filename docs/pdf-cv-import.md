@@ -11,6 +11,8 @@
 
 The original PDF is not uploaded or stored. Only the reviewed profile entries are saved in Chrome local extension storage. Imported entries keep source information in the knowledge base, for example `Imported from jane-doe-cv.pdf`.
 
+Parsed candidates are validated with Zod before they enter the review form. Pressing **Save to Knowledge Base** is the confirmation boundary; no imported value is persisted when a file is selected. Saving uses the canonical `ProfileRepository`. Existing entries with the same profile ID and label are replaced, while unrelated entries and profiles are preserved.
+
 ## Supported PDFs
 
 - Text-based PDFs with selectable text.
@@ -19,6 +21,8 @@ The original PDF is not uploaded or stored. Only the reviewed profile entries ar
 - Maximum extracted text: 50,000 characters.
 
 Scanned/image-only PDF files are intentionally rejected with a clear error because OCR is not part of this feature yet.
+
+DOCX files are not supported yet.
 
 ## Current parsing behavior
 
@@ -34,5 +38,9 @@ Address details such as street and postal code are not required and are not stro
 
 - `apps/extension/src/features/import/pdfTextExtractor.ts`: local PDF.js extraction and validation.
 - `apps/extension/src/features/import/pdfCvParser.ts`: deterministic document/CV parser.
+- `apps/extension/src/features/import/pdfFileValidation.ts`: supported-type and size checks.
 - `apps/extension/src/setup/SetupAssistant.tsx`: import/review/save UI.
-- `tests/unit/pdfCvParser.test.ts`: parser tests.
+- `apps/extension/src/setup/setupProfileService.ts`: validated confirmation and canonical persistence boundary.
+- `tests/unit/pdfCvParser.test.ts`, `pdfImportValidation.test.ts`, and `setupProfileService.test.ts`: focused parser and integration tests.
+
+The implementation uses pinned `pdfjs-dist` 6.1.200. Extracted plaintext exists temporarily in memory during parsing and is released after the import handler completes; it is not stored separately from user-confirmed profile entries.

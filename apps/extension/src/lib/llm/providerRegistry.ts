@@ -1,72 +1,44 @@
-import type { LlmConfig } from '../config/llmConfig'
+import type { ProviderRuntimeConfig } from '../config/llmConfig'
 import { LlmError } from './errors'
 import type { LlmProvider } from './provider'
-import type { LlmProviderId, LlmProviderMode, LlmProviderStatusMap } from './types'
+import { PROVIDER_CATALOG, PROVIDER_IDS, type ProviderId } from './providerCatalog'
+import type { LlmProviderMode, LlmProviderStatusMap } from './types'
+import { createAnthropicProvider } from './anthropicProvider'
+import { createMistralProvider } from './mistralProvider'
 import { createOllamaProvider } from './ollamaProvider'
 import { createOpenAiProvider } from './openaiProvider'
 
 export interface LlmProviderRegistry {
-  getProvider(providerId: LlmProviderId): LlmProvider
+  getProvider(providerId: ProviderId): LlmProvider
   listProviders(): LlmProvider[]
   getProviderStatuses(): Promise<LlmProviderStatusMap>
 }
 
-export function getProviderMode(providerId: LlmProviderId): LlmProviderMode {
-  switch (providerId) {
-    case 'openai':
-      return 'cloud'
-    case 'ollama':
-    default:
-      return 'local'
-  }
+export function getProviderMode(providerId: ProviderId): LlmProviderMode {
+  const entry = PROVIDER_CATALOG[providerId]
+  if (!entry) throw new LlmError('UNKNOWN_PROVIDER', `Unknown provider: ${String(providerId)}`)
+  return entry.mode
 }
 
-export function createProviderRegistry(config: LlmConfig): LlmProviderRegistry {
-  const providers: Record<LlmProviderId, LlmProvider> = {
-    ollama: createOllamaProvider(config),
-    openai: createOpenAiProvider(config)
+export function createProviderRegistry(configs: Record<ProviderId, ProviderRuntimeConfig>): LlmProviderRegistry {
+  const providers: Record<ProviderId, LlmProvider> = {
+    openai: createOpenAiProvider(configs.openai),
+    anthropic: createAnthropicProvider(configs.anthropic),
+    mistral: createMistralProvider(configs.mistral),
+    ollama: createOllamaProvider(configs.ollama)
   }
-
   return {
     getProvider(providerId) {
       const provider = providers[providerId]
-      if (!provider) {
-        throw new LlmError('UNKNOWN_PROVIDER', `Unknown provider: ${providerId}`)
-      }
-
-      if (providerId === 'openai' && !config.openai.cloudEnabled) {
-        throw new LlmError('CLOUD_MODE_DISABLED', 'Cloud mode is disabled by default.')
-      }
-
+      if (!provider) throw new LlmError('UNKNOWN_PROVIDER', `Unknown provider: ${String(providerId)}`)
       return provider
     },
-    listProviders() {
-      return Object.values(providers)
-    },
+    listProviders: () => PROVIDER_IDS.map((id) => providers[id]),
     async getProviderStatuses() {
-      const entries = await Promise.all(
-        (Object.keys(providers) as LlmProviderId[]).map(async (id) => {
-          const provider = providers[id]
-          try {
-            const status = await provider.getStatus()
-            return [id, status] as const
-          } catch (error) {
-            return [
-              id,
-              {
-                available: false,
-                label: provider.label,
-                details: error instanceof Error ? error.message : 'Status check failed.'
-              }
-            ] as const
-          }
-        })
-      )
-
-      return entries.reduce((acc, [id, status]) => {
-        acc[id] = status
-        return acc
-      }, {} as LlmProviderStatusMap)
+      return Object.fromEntries(await Promise.all(PROVIDER_IDS.map(async (id) => {
+        try { return [id, await providers[id].testConnection()] as const }
+        catch (error) { return [id, { available: false, label: providers[id].label, details: error instanceof Error ? error.message : 'Status check failed.' }] as const }
+      }))) as LlmProviderStatusMap
     }
   }
 }

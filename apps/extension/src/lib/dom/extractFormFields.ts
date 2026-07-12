@@ -1,12 +1,19 @@
 // ── types ─────────────────────────────────────────────────────
 
+import { registerFieldElement } from './fieldLocatorRegistry'
+import { findSelectProxy, isExtractableSelect } from './selectProxy'
+
 export type FormField = {
+  locator:     string
   tag:         string
   type:        string
   name:        string
   id:          string
   label:       string
   placeholder: string
+  autocomplete: string
+  title:       string
+  inputMode:   string
   value:       string
   required:    boolean
   options:     string[]
@@ -64,7 +71,9 @@ function isNoiseField(el: HTMLElement, label: string): boolean {
 function findLabel(el: HTMLElement): string {
   // 1. <label for="id">
   if (el.id) {
-    const label = document.querySelector(`label[for="${el.id}"]`)
+    const label = Array.from(el.ownerDocument.querySelectorAll('label')).find(
+      candidate => candidate.htmlFor === el.id
+    )
     if (label?.textContent) return label.textContent.trim()
   }
   // 2. element wrapped inside <label>
@@ -82,14 +91,30 @@ function findLabel(el: HTMLElement): string {
     if (target?.textContent) return target.textContent.trim()
   }
 
-  // 5. previous sibling looks like a label
+  // 5. hidden native selects may be labelled through their visible combobox proxy
+  if (el instanceof HTMLSelectElement) {
+    const proxy = findSelectProxy(el)
+    if (proxy?.id) {
+      const proxyLabel = Array.from(el.ownerDocument.querySelectorAll('label')).find(
+        candidate => candidate.htmlFor === proxy.id
+      )
+      if (proxyLabel?.textContent) return proxyLabel.textContent.trim()
+    }
+    const proxyLabel = proxy?.getAttribute('aria-label') ?? proxy?.getAttribute('title')
+    if (proxyLabel) return proxyLabel.trim()
+
+    const title = el.getAttribute('title')
+    if (title) return title.trim()
+  }
+
+  // 6. previous sibling looks like a label
   const prev = el.previousElementSibling
   if (prev && ['LABEL', 'SPAN', 'DIV', 'P', 'LI'].includes(prev.tagName)) {
     const text = prev.textContent?.trim()
     if (text && text.length < 120) return text
   }
 
-  // 6. nearest ancestor that has a short text node before the input
+  // 7. nearest ancestor that has a short text node before the input
   const parent = el.parentElement
   if (parent) {
     const text = Array.from(parent.childNodes)
@@ -113,6 +138,8 @@ export function extractFormFields(root: Document): ExtractionResult {
   root.querySelectorAll('input').forEach((el) => {
     if (skipInputTypes.includes(el.type)) return
 
+    if (el.disabled) { skipped++; return }
+
     // skip truly invisible elements (but keep checkbox/radio — they may use custom UI)
     const isCheckboxLike = el.type === 'checkbox' || el.type === 'radio'
     if (!el.offsetParent && !isCheckboxLike) return
@@ -122,12 +149,16 @@ export function extractFormFields(root: Document): ExtractionResult {
     if (isNoiseField(el, label)) { skipped++; return }
 
     fields.push({
+      locator:     registerFieldElement(el),
       tag:         'input',
       type:        el.type || 'text',
       name:        el.name || '',
       id:          el.id   || '',
       label,
       placeholder: el.placeholder || '',
+      autocomplete: el.autocomplete || '',
+      title:       el.title || '',
+      inputMode:   el.inputMode || '',
       value:       el.type === 'checkbox' || el.type === 'radio' ? (el.checked ? 'true' : '') : (el.value || ''),
       required:    el.required,
       options:     [],
@@ -136,18 +167,23 @@ export function extractFormFields(root: Document): ExtractionResult {
 
   // ── textareas ──────────────────────────────────────────────
   root.querySelectorAll('textarea').forEach((el) => {
+    if (el.disabled) { skipped++; return }
     if (!el.offsetParent) return
 
     const label = findLabel(el)
     if (isNoiseField(el, label)) { skipped++; return }
 
     fields.push({
+      locator:     registerFieldElement(el),
       tag:         'textarea',
       type:        'textarea',
       name:        el.name || '',
       id:          el.id   || '',
       label,
       placeholder: el.placeholder || '',
+      autocomplete: el.autocomplete || '',
+      title:       el.title || '',
+      inputMode:   el.inputMode || '',
       value:       el.value || '',
       required:    el.required,
       options:     [],
@@ -156,7 +192,8 @@ export function extractFormFields(root: Document): ExtractionResult {
 
   // ── selects ────────────────────────────────────────────────
   root.querySelectorAll('select').forEach((el) => {
-    if (!el.offsetParent) return
+    if (el.disabled) { skipped++; return }
+    if (!isExtractableSelect(el)) return
 
     const label = findLabel(el)
     if (isNoiseField(el, label)) { skipped++; return }
@@ -166,12 +203,16 @@ export function extractFormFields(root: Document): ExtractionResult {
       .filter(t => t.length > 0)
 
     fields.push({
+      locator:     registerFieldElement(el),
       tag:         'select',
       type:        'select',
       name:        el.name || '',
       id:          el.id   || '',
       label,
       placeholder: '',
+      autocomplete: el.autocomplete || '',
+      title:       el.title || '',
+      inputMode:   '',
       value:       el.selectedOptions[0]?.text?.trim() || '',
       required:    el.required,
       options,

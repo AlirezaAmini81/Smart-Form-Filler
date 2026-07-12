@@ -4,6 +4,7 @@ import { z } from 'zod'
 export const FormFieldKind = z.enum(['input', 'textarea', 'select'])
 
 export const FormFieldMetadataSchema = z.object({
+  locator: z.string().optional(),
   name: z.string().optional(),
   id: z.string().optional(),
   type: z.string().optional(),
@@ -11,11 +12,21 @@ export const FormFieldMetadataSchema = z.object({
   label: z.string().optional(),
   placeholder: z.string().optional(),
   ariaLabel: z.string().optional(),
+  autocomplete: z.string().optional(),
+  title: z.string().optional(),
+  inputMode: z.string().optional(),
   value: z.string().optional(),
   options: z.array(z.string()).optional()
 })
 
 export type FormFieldMetadata = z.infer<typeof FormFieldMetadataSchema>
+
+export const SuggestionModeSchema = z.enum([
+  'full-context',
+  'identifier-only',
+  'deterministic-only'
+])
+export type SuggestionMode = z.infer<typeof SuggestionModeSchema>
 
 export const FormAnalysisResultSchema = z.object({
   title: z.string(),
@@ -26,15 +37,6 @@ export const FormAnalysisResultSchema = z.object({
 })
 
 export type FormAnalysisResult = z.infer<typeof FormAnalysisResultSchema>
-
-// Vault / profile placeholders
-export const KnowledgeBaseProfileSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  createdAt: z.string()
-})
-
-export type KnowledgeBaseProfile = z.infer<typeof KnowledgeBaseProfileSchema>
 
 // Local LLM status placeholder
 export const LocalLlmStatusSchema = z.object({
@@ -74,6 +76,7 @@ export type SuggestionProvenance = z.infer<typeof SuggestionProvenanceSchema>
 
 export const SuggestedFieldValueSchema = z.object({
   fieldId: z.string(),
+  fieldLocator: z.string().optional(),
   fieldName: z.string().optional(),
   fieldLabel: z.string().optional(),
   suggestedValue: z.string().nullable(),

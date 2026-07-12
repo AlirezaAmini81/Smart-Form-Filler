@@ -107,6 +107,26 @@ function ensureOverlayStyles() {
     }
     #${OVERLAY_ID} .saff-item.disabled {
       opacity: 0.5;
+      background: #f1f5f9;
+    }
+    #${OVERLAY_ID} .saff-section-title {
+      margin: 12px 0 8px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+    #${OVERLAY_ID} .saff-section-title:first-child {
+      margin-top: 0;
+    }
+    #${OVERLAY_ID} .saff-detected-marker {
+      width: 14px;
+      height: 14px;
+      margin-top: 2px;
+      border-radius: 50%;
+      background: #cbd5e1;
+      flex: 0 0 auto;
     }
     #${OVERLAY_ID} .saff-label {
       font-size: 12px;
@@ -164,7 +184,7 @@ function ensureOverlayStyles() {
   document.head.appendChild(style)
 }
 
-function showSuggestionsOverlay(suggestions: SuggestedFieldValue[], minConfidence: number = 0) {
+export function showSuggestionsOverlay(suggestions: SuggestedFieldValue[], minConfidence: number = 0) {
   removeOverlay()
   ensureOverlayStyles()
 
@@ -180,7 +200,14 @@ function showSuggestionsOverlay(suggestions: SuggestedFieldValue[], minConfidenc
 
   const status = document.createElement('div')
   status.className = 'saff-status'
-  status.textContent = 'Select suggestions to apply.'
+  const matchedSuggestions = suggestions
+    .map((suggestion, index) => ({ suggestion, index }))
+    .filter(({ suggestion }) => Boolean(suggestion.suggestedValue))
+  const unmatchedSuggestions = suggestions
+    .filter((suggestion) => !suggestion.suggestedValue)
+  status.textContent = matchedSuggestions.length > 0
+    ? 'Select suggestions to apply.'
+    : 'No fillable suggestions. Detected fields are listed below.'
 
   const checkboxes: HTMLInputElement[] = []
   const items: Array<{ element: HTMLDivElement; checkbox: HTMLInputElement; rank: number }> = []
@@ -201,21 +228,22 @@ function showSuggestionsOverlay(suggestions: SuggestedFieldValue[], minConfidenc
 
   filter.appendChild(filterLabel)
   filter.appendChild(filterInput)
-  body.appendChild(filter)
+  if (matchedSuggestions.length > 0) {
+    body.appendChild(filter)
+    const matchedTitle = document.createElement('div')
+    matchedTitle.className = 'saff-section-title'
+    matchedTitle.textContent = `Suggestions (${matchedSuggestions.length})`
+    body.appendChild(matchedTitle)
+  }
 
-  suggestions.forEach((suggestion, index) => {
+  matchedSuggestions.forEach(({ suggestion, index }) => {
     const item = document.createElement('div')
     item.className = 'saff-item'
 
     const checkbox = document.createElement('input')
     checkbox.type = 'checkbox'
-    checkbox.checked = Boolean(suggestion.suggestedValue)
-    checkbox.disabled = !suggestion.suggestedValue
+    checkbox.checked = true
     checkboxes.push(checkbox)
-
-    if (!suggestion.suggestedValue) {
-      item.classList.add('disabled')
-    }
 
     const content = document.createElement('div')
     const label = document.createElement('div')
@@ -224,7 +252,7 @@ function showSuggestionsOverlay(suggestions: SuggestedFieldValue[], minConfidenc
 
     const value = document.createElement('div')
     value.className = 'saff-value'
-    value.textContent = suggestion.suggestedValue ?? 'No suggestion'
+    value.textContent = suggestion.suggestedValue ?? ''
 
     const meta = document.createElement('div')
     meta.className = 'saff-meta'
@@ -244,6 +272,37 @@ function showSuggestionsOverlay(suggestions: SuggestedFieldValue[], minConfidenc
     checkbox.dataset.index = String(index)
     items.push({ element: item, checkbox, rank: confidenceRank(suggestion.confidence) })
   })
+
+  if (unmatchedSuggestions.length > 0) {
+    const unmatchedTitle = document.createElement('div')
+    unmatchedTitle.className = 'saff-section-title'
+    unmatchedTitle.textContent = `Detected without suggestion (${unmatchedSuggestions.length})`
+    body.appendChild(unmatchedTitle)
+
+    unmatchedSuggestions.forEach((suggestion) => {
+      const item = document.createElement('div')
+      item.className = 'saff-item disabled'
+      item.dataset.saffUnmatched = 'true'
+
+      const marker = document.createElement('span')
+      marker.className = 'saff-detected-marker'
+
+      const content = document.createElement('div')
+      const label = document.createElement('div')
+      label.className = 'saff-label'
+      label.textContent = suggestion.fieldLabel ?? suggestion.fieldName ?? suggestion.fieldId
+
+      const value = document.createElement('div')
+      value.className = 'saff-value'
+      value.textContent = 'Detected, but no reliable profile match was found.'
+
+      content.appendChild(label)
+      content.appendChild(value)
+      item.appendChild(marker)
+      item.appendChild(content)
+      body.appendChild(item)
+    })
+  }
 
   const applyConfidenceFilter = (rank: number) => {
     items.forEach((item) => {
@@ -268,6 +327,7 @@ function showSuggestionsOverlay(suggestions: SuggestedFieldValue[], minConfidenc
   const applyButton = document.createElement('button')
   applyButton.className = 'primary'
   applyButton.textContent = 'Apply selected'
+  applyButton.disabled = matchedSuggestions.length === 0
   applyButton.onclick = () => {
     const selectedAnswers: FieldAnswer[] = []
 
@@ -281,10 +341,12 @@ function showSuggestionsOverlay(suggestions: SuggestedFieldValue[], minConfidenc
         return
       }
       selectedAnswers.push({
+        locator: suggestion.fieldLocator,
         id: suggestion.fieldId ?? undefined,
         name: suggestion.fieldName ?? undefined,
         label: suggestion.fieldLabel ?? undefined,
-        value: suggestion.suggestedValue
+        value: suggestion.suggestedValue,
+        approved: true
       })
     })
 
@@ -315,7 +377,7 @@ function showSuggestionsOverlay(suggestions: SuggestedFieldValue[], minConfidenc
 console.log('[saff] content script loaded on', location.href)
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  console.log('[saff] content script received message', msg)
+  console.log('[saff] content script received message', msg?.type)
 
   // ── count form elements ────────────────────────────────────
   if (msg?.type === 'ANALYZE_PAGE') {
@@ -338,7 +400,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'EXTRACT_FIELDS') {
     try {
       const result = extractFormFields(document)
-      console.log('[saff] EXTRACT_FIELDS result', result)
+      console.log('[saff] EXTRACT_FIELDS completed', { fields: result.fields.length, skipped: result.skipped })
       sendResponse(result)
     } catch (e) {
       sendResponse({ error: String(e) })
@@ -351,7 +413,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     try {
       const answers = msg.answers as FieldAnswer[]
       const result  = fillFormFields(answers)
-      console.log('[saff] FILL_FIELDS result', result)
+      console.log('[saff] FILL_FIELDS completed', { filled: result.filled, skipped: result.skipped })
       sendResponse(result)
     } catch (e) {
       sendResponse({ error: String(e) })

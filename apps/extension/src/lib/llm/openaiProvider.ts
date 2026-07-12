@@ -1,154 +1,46 @@
-import type { LlmConfig } from '../config/llmConfig'
+import type { ProviderRuntimeConfig } from '../config/llmConfig'
+import { z } from 'zod'
 import { LlmError } from './errors'
 import type { LlmProvider } from './provider'
+import { fetchWithTimeout, readJson, requireOk } from './providerHttp'
 import { buildSuggestionPrompt } from './promptBuilder'
 import { parseSuggestionResponse } from './responseParser'
 
-async function fetchWithTimeout(
-  url: string,
-  options: RequestInit,
-  timeoutMs: number
-): Promise<Response> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+const ENDPOINT = 'https://api.openai.com/v1'
+const CompletionSchema = z.object({
+  choices: z.array(z.object({ message: z.object({ content: z.string().nullable() }).passthrough() }).passthrough())
+}).passthrough()
 
-  try {
-    return await fetch(url, { ...options, signal: controller.signal })
-  } catch (error) {
-    if (controller.signal.aborted) {
-      throw new LlmError('TIMEOUT', 'OpenAI proxy request timed out.')
-    }
-    throw error
-  } finally {
-    clearTimeout(timeout)
-  }
+function headers(apiKey?: string): HeadersInit {
+  if (!apiKey) throw new LlmError('CREDENTIAL_NOT_CONFIGURED', 'OpenAI API key is not configured.')
+  return { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
 }
 
-export function createOpenAiProvider(config: LlmConfig): LlmProvider {
-  const proxyUrl = config.openai.proxyUrl
-  const timeoutMs = config.openai.timeoutMs
-
+export function createOpenAiProvider(config: ProviderRuntimeConfig): LlmProvider {
   return {
-    id: 'openai',
-    label: 'OpenAI proxy',
-    mode: 'cloud',
-    async getStatus() {
-      if (!config.openai.cloudEnabled) {
-        return {
-          available: false,
-          label: 'OpenAI proxy',
-          details: 'Cloud mode disabled.'
-        }
-      }
-
-      try {
-        const response = await fetchWithTimeout(
-          `${proxyUrl}/api/llm/status`,
-          { method: 'GET' },
-          timeoutMs
-        )
-
-        if (!response.ok) {
-          return {
-            available: false,
-            label: 'OpenAI proxy',
-            details: 'Proxy responded with an error.'
-          }
-        }
-
-        const data = (await response.json()) as { ok?: boolean; model?: string; error?: string }
-        if (!data.ok) {
-          return {
-            available: false,
-            label: 'OpenAI proxy',
-            details: data.error ?? 'Proxy not ready.'
-          }
-        }
-
-        return {
-          available: true,
-          label: 'OpenAI proxy',
-          details: 'Proxy ready.',
-          model: data.model
-        }
-      } catch (error) {
-        return {
-          available: false,
-          label: 'OpenAI proxy',
-          details: 'Proxy unreachable.'
-        }
-      }
+    id: 'openai', label: 'OpenAI', mode: 'cloud',
+    async testConnection() {
+      const response = await fetchWithTimeout(`${ENDPOINT}/models/${encodeURIComponent(config.model)}`, {
+        method: 'GET', headers: headers(config.apiKey)
+      }, config.timeoutMs)
+      await requireOk(response, 'OpenAI')
+      return { available: true, label: 'OpenAI', details: 'Connected.', model: config.model }
     },
     async generateFieldSuggestions(input) {
-      if (input.privacyMode !== 'cloud-opt-in') {
-        throw new LlmError('CLOUD_MODE_DISABLED', 'Cloud mode requires explicit opt-in.')
-      }
-
-      if (!config.openai.cloudEnabled) {
-        throw new LlmError('CLOUD_MODE_DISABLED', 'Cloud mode is disabled by default.')
-      }
-
-      const prompt = buildSuggestionPrompt({
-        pageContext: input.pageContext,
-        activeProfile: input.activeProfile,
-        fields: input.fields,
-        knowledgeSnippets: input.knowledgeSnippets,
-        privacyMode: input.privacyMode,
-        injectionWarnings: input.injectionWarnings
-      })
-
-      let response: Response
-      try {
-        response = await fetchWithTimeout(
-          `${proxyUrl}/api/llm/suggestions`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              system: prompt.system,
-              user: prompt.user,
-              schemaVersion: prompt.schemaVersion
-            })
-          },
-          timeoutMs
-        )
-      } catch (error) {
-        if (error instanceof LlmError) {
-          throw error
-        }
-        throw new LlmError('OPENAI_PROXY_UNAVAILABLE', 'OpenAI proxy is not reachable.')
-      }
-
-      let data: unknown
-      try {
-        data = await response.json()
-      } catch (error) {
-        throw new LlmError('INVALID_JSON', 'Proxy returned invalid JSON.')
-      }
-
-      if (!response.ok) {
-        const message =
-          typeof data === 'object' && data && 'error' in data
-            ? String((data as { error?: string }).error)
-            : 'OpenAI proxy error.'
-
-        if (message.includes('OPENAI_API_KEY_MISSING')) {
-          throw new LlmError('OPENAI_API_KEY_MISSING', 'OpenAI API key is missing.')
-        }
-
-        throw new LlmError('PROVIDER_UNAVAILABLE', message)
-      }
-
-      if (typeof data === 'object' && data && 'error' in data) {
-        throw new LlmError('PROVIDER_UNAVAILABLE', String((data as { error?: string }).error))
-      }
-
-      const rawText = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
-      const parsed = parseSuggestionResponse(data)
-      return {
-        response: parsed,
-        rawText
-      }
+      if (input.privacyMode !== 'cloud-opt-in') throw new LlmError('CLOUD_MODE_DISABLED', 'Cloud mode requires explicit opt-in.')
+      const prompt = buildSuggestionPrompt(input)
+      const response = await fetchWithTimeout(`${ENDPOINT}/chat/completions`, {
+        method: 'POST', headers: headers(config.apiKey), body: JSON.stringify({
+          model: config.model,
+          messages: [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
+          response_format: { type: 'json_object' }, temperature: 0
+        })
+      }, config.timeoutMs)
+      await requireOk(response, 'OpenAI')
+      const data = CompletionSchema.parse(await readJson(response, 'OpenAI'))
+      const content = data.choices?.[0]?.message?.content
+      if (!content) throw new LlmError('INVALID_JSON', 'OpenAI returned an empty response.')
+      return { response: parseSuggestionResponse(content), rawText: content, model: config.model }
     }
   }
 }

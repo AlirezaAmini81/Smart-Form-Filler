@@ -1,13 +1,9 @@
 import React, { useRef, useState } from 'react'
-import type { ActiveProfile, SuggestionSensitivity } from '../features/suggestions/suggestionTypes'
-import type { KnowledgeEntry, StoredKnowledgeBase } from '../features/suggestions/knowledgeTypes'
-import {
-  createChromeStorageAdapter,
-  loadStoredKnowledgeBase,
-  saveStoredKnowledgeBase
-} from '../features/suggestions/knowledgeStore'
+import type { SuggestionSensitivity } from '../features/suggestions/suggestionTypes'
+import { createChromeProfileRepository } from '../features/suggestions/profileRepository'
 import { extractTextFromPdf } from '../features/import/pdfTextExtractor'
 import { parseCvText } from '../features/import/pdfCvParser'
+import { saveReviewedProfile } from './setupProfileService'
 
 // ── types ─────────────────────────────────────────────────────
 type Field = {
@@ -143,136 +139,6 @@ function slugify(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
-}
-
-function createEntryId(label: string): string {
-  const base = slugify(label) || 'entry'
-  const stamp = Date.now().toString(36)
-  return `entry_${base}_${stamp}`
-}
-
-function inferSensitivity(key: string | undefined, label: string): SuggestionSensitivity {
-  if (key && DEFAULT_FIELD_SENSITIVITY[key]) {
-    return DEFAULT_FIELD_SENSITIVITY[key]
-  }
-
-  const lowered = label.toLowerCase()
-  if (/(password|token|secret|api key|private key)/.test(lowered)) {
-    return 'secret'
-  }
-  if (/(passport|iban|bank|address|email|phone|id|license)/.test(lowered)) {
-    return 'sensitive'
-  }
-  return 'normal'
-}
-
-function buildKnowledgeEntries(params: {
-  profileId: string
-  values: Record<string, string>
-  entries: CustomEntry[]
-  fieldSensitivity: Record<string, SuggestionSensitivity>
-  sourceId: string
-  sourceLabel: string
-}): KnowledgeEntry[] {
-  const fixedEntries: KnowledgeEntry[] = FIELDS.flatMap((field) => {
-    const value = params.values[field.key]
-    if (!value?.trim()) {
-      return []
-    }
-
-    return [
-      {
-        id: createEntryId(field.label),
-        profileId: params.profileId,
-        label: field.label,
-        value: value.trim(),
-        sourceId: params.sourceId,
-        sourceLabel: params.sourceLabel,
-        sensitivity: params.fieldSensitivity[field.key] ?? inferSensitivity(field.key, field.label)
-      }
-    ]
-  })
-
-  const customEntries: KnowledgeEntry[] = params.entries.flatMap((entry) => {
-    const title = entry.title.trim()
-    const content = entry.content.trim()
-    if (!title || !content) {
-      return []
-    }
-
-    return [
-      {
-        id: createEntryId(title),
-        profileId: params.profileId,
-        label: title,
-        value: content,
-        summary: entry.long ? content.slice(0, 120) : undefined,
-        sourceId: params.sourceId,
-        sourceLabel: params.sourceLabel,
-        sensitivity: entry.sensitivity ?? inferSensitivity(undefined, title)
-      }
-    ]
-  })
-
-  return [...fixedEntries, ...customEntries]
-}
-
-async function upsertKnowledgeBase(params: {
-  accountId: string
-  profileName: string
-  values: Record<string, string>
-  entries: CustomEntry[]
-  fieldSensitivity: Record<string, SuggestionSensitivity>
-  sourceId: string
-  sourceLabel: string
-}): Promise<StoredKnowledgeBase> {
-  const adapter = createChromeStorageAdapter()
-  if (!adapter) {
-    throw new Error('chrome.storage.local is not available.')
-  }
-
-  const existing = (await loadStoredKnowledgeBase(adapter)) ?? {
-    version: 1 as const,
-    updatedAt: new Date().toISOString(),
-    profiles: [],
-    entries: []
-  }
-  const profile: ActiveProfile = {
-    id: params.accountId,
-    name: params.profileName,
-    sensitivity: 'normal'
-  }
-
-  const profiles = existing.profiles.some((item) => item.id === profile.id)
-    ? existing.profiles.map((item) => (item.id === profile.id ? { ...item, name: profile.name } : item))
-    : [...existing.profiles, profile]
-
-  const newEntries = buildKnowledgeEntries({
-    profileId: profile.id,
-    values: params.values,
-    entries: params.entries,
-    fieldSensitivity: params.fieldSensitivity,
-    sourceId: params.sourceId,
-    sourceLabel: params.sourceLabel
-  })
-
-  const entryLabels = new Set(newEntries.map((entry) => entry.label))
-  const entries = [
-    ...existing.entries.filter(
-      (entry) => !(entry.profileId === profile.id && entryLabels.has(entry.label))
-    ),
-    ...newEntries
-  ]
-
-  const updated: StoredKnowledgeBase = {
-    version: 1,
-    updatedAt: new Date().toISOString(),
-    profiles,
-    entries
-  }
-
-  await saveStoredKnowledgeBase(adapter, updated)
-  return updated
 }
 
 // ── component ─────────────────────────────────────────────────
@@ -441,11 +307,17 @@ export default function SetupAssistant() {
     }
 
     try {
-      await upsertKnowledgeBase({
-        accountId: id,
+      const repository = createChromeProfileRepository()
+      if (!repository) throw new Error('chrome.storage.local is not available.')
+
+      await saveReviewedProfile(repository, {
+        confirmed: true,
+        profileId: id,
         profileName,
         values,
-        entries,
+        entries: entries.flatMap(({ title, content, long, sensitivity }) =>
+          title.trim() && content.trim() ? [{ title, content, long, sensitivity }] : []
+        ),
         fieldSensitivity,
         sourceId: importSourceLabel === STORAGE_SOURCE_LABEL ? STORAGE_SOURCE_ID : PDF_SOURCE_ID,
         sourceLabel: importSourceLabel

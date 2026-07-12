@@ -28,7 +28,7 @@ Dev notes
 - `npm run test` runs unit tests (Vitest).
 - `npm run typecheck` runs `tsc` type checking.
 
-LLM connector demo (Phase 6/7)
+LLM providers
 
 Ollama local provider
 
@@ -36,15 +36,13 @@ Ollama local provider
 2. Pull a small model, for example:
 	- `ollama pull llama3.2:3b`
 3. Ensure Ollama runs at http://localhost:11434.
-4. Open the LLM Demo tab and select Ollama (local).
-5. Click Generate suggestions to verify the connection.
+4. In Settings → Providers, select Ollama, choose a model, grant the loopback permission, and test the connection.
 
-OpenAI proxy (optional, cloud mode)
+Cloud providers
 
-1. Copy `.env.example` to `.env` and set `OPENAI_API_KEY`.
-2. Optionally set `OPENAI_MODEL` and `PORT`.
-3. Start the proxy: `npm run dev:api`.
-4. In the LLM Demo tab, select OpenAI (cloud) and opt in to cloud mode.
-5. Generate suggestions and confirm the cloud warning is shown.
+1. Enable and unlock the encrypted vault for persistent credentials, or choose session-only storage.
+2. In Settings → Providers, select OpenAI, Anthropic Claude, or Mistral.
+3. Enter your API key and model, grant the provider-specific host permission, save, and test the connection.
+4. Analyze a form from the popup and review suggestions before filling.
 
-Cloud mode is optional and disabled by default. Do not use secret profiles in cloud mode.
+The service worker calls the provider directly; there is no application proxy. Selected profile facts may be sent to the chosen cloud provider. Secret snippets remain blocked and every fill requires approval.

@@ -1,17 +1,19 @@
-# LLM Connector (Phase 6/7 Prototype)
+# LLM Connector
 
 This document describes the provider-based LLM connector and suggestion pipeline.
 
 Overview
 
-- Providers are pluggable: Ollama (local) and OpenAI (cloud via proxy).
+- Providers are pluggable: Ollama, OpenAI, Anthropic Claude, and Mistral.
 - Local-first: Ollama is the intended default when configured.
-- Cloud mode is optional and disabled by default.
+- Cloud providers use user-supplied credentials encrypted locally or retained for the browser session.
 - No automatic form insertion. Suggestions require user review.
 
 Provider architecture
 
-- LLM providers implement a shared interface: status checks and suggestion generation.
+- LLM providers implement one shared interface for connection tests and suggestion generation.
+- The Manifest V3 service worker owns provider calls, credential access, and permission checks.
+- Provider-specific authentication, endpoints, request bodies, parsing, and errors stay in adapters.
 - The suggestion engine handles data minimization, policy checks, prompt-injection guards, and validation.
 - Output is strictly validated with Zod before use.
 
@@ -21,12 +23,13 @@ Ollama provider (local)
 - Uses /api/generate with a strict JSON prompt.
 - Handles not-running, missing model, timeouts, and malformed responses.
 
-OpenAI provider (cloud, optional)
+Cloud providers
 
-- Uses a local development proxy at http://localhost:8787.
-- The extension never stores or ships API keys.
-- API keys live only in the proxy .env file.
-- Cloud mode must be explicitly enabled per request.
+- OpenAI uses Chat Completions with bearer authentication and JSON response mode.
+- Anthropic uses the Messages API with `x-api-key`, version headers, and text content-block extraction.
+- Mistral uses Chat Completions with bearer authentication and JSON response mode.
+- Cloud API origins are fixed; there is no proxy, environment API key, or arbitrary base URL.
+- Persistent keys require the unlocked vault. Session-only keys are cleared on restart, reload, lock, or deletion.
 
 Structured output schema
 
@@ -56,10 +59,9 @@ Error handling
 
 Common errors are typed and handled explicitly:
 
-- Provider unavailable or disabled
+- Provider unavailable or unreachable
 - Ollama not running or model missing
-- Cloud mode disabled
-- Proxy unreachable
+- Credential missing or invalid, vault locked, permission denied, or rate limited
 - Invalid JSON or schema validation errors
 - No active profile or no knowledge snippets
 
@@ -77,15 +79,8 @@ Privacy limitations
 - Sensitive snippets in cloud mode generate warnings.
 - No automatic insertion or background autofill is performed in this phase.
 
-Integration notes
+Permissions
 
-- Knowledge retrieval uses a storage-backed demo retriever when `chrome.storage.local` is available.
-- If storage is empty or unavailable, it falls back to in-memory demo entries.
-- Replace the demo retriever with the teammate knowledge base module after merge.
-
-LLM demo tab
-
-- The popup now includes an LLM Demo tab for the full pipeline walkthrough.
-- It can seed demo knowledge into `chrome.storage.local`, add entries, and list recent entries.
-- Demo HTML extraction produces form field metadata for suggestion generation.
-- A demo form overlay previews suggested values without inserting into the page.
+- Provider origins are optional and requested when saving or testing a provider.
+- Ollama endpoints are configurable only on localhost or loopback addresses.
+- Content scripts receive neither credentials nor raw provider responses.
