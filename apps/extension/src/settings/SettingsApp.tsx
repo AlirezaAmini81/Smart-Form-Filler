@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { parseCvText } from '../features/import/pdfCvParser'
-import { extractTextFromPdf } from '../features/import/pdfTextExtractor'
+import { DOCUMENT_FILE_ACCEPT } from '../features/import/documentFileValidation'
+import { extractTextFromDocument } from '../features/import/documentTextExtractor'
 import type { KnowledgeEntry, StoredKnowledgeBase } from '../features/suggestions/knowledgeTypes'
 import { createChromeProfileRepository } from '../features/suggestions/profileRepository'
 import type { VaultStatus } from '../features/suggestions/profileVault'
@@ -213,7 +214,7 @@ function OverviewSection(props: { settings: ExtensionSettings; knowledge: Stored
 
 const SETUP_STEPS = [
   ['Welcome and privacy', 'Profile values stay local unless you explicitly enable and use OpenAI cloud mode.'],
-  ['Choose a setup method', 'Create a profile manually or import a text-based PDF.'],
+  ['Choose a setup method', 'Create a profile manually or import a PDF, DOCX, or TXT document.'],
   ['Review your profile', 'Confirm imported or manually entered information before it is saved.'],
   ['Select a provider', 'Choose Ollama or a cloud provider using your own credentials.'],
   ['Verify the provider', 'Run a connection test without sending profile data.'],
@@ -228,7 +229,7 @@ function SetupSection(props: { settings: ExtensionSettings; save: (settings: Ext
   return <section><PageHeader title="Setup" description="Progress is saved after each confirmed step and can be resumed later." />
     <ol className="stepper">{SETUP_STEPS.map(([label], index) => <li key={label} className={index === step ? 'active' : index < step ? 'done' : ''}><span>{index + 1}</span>{label}</li>)}</ol>
     <div className="setup-stage"><p className="eyebrow">Step {step + 1} of {SETUP_STEPS.length}</p><h2>{title}</h2><p>{description}</p>
-      {step === 1 && <div className="button-row"><button className="button secondary" onClick={() => props.navigate('profiles')}>Enter manually</button><button className="button secondary" onClick={() => props.navigate('documents')}>Import PDF</button></div>}
+      {step === 1 && <div className="button-row"><button className="button secondary" onClick={() => props.navigate('profiles')}>Enter manually</button><button className="button secondary" onClick={() => props.navigate('documents')}>Import document</button></div>}
       {step === 2 && <p className={props.hasProfile ? 'success-text' : 'warning-text'}>{props.hasProfile ? 'At least one profile is stored.' : 'Create and review a profile before continuing.'}</p>}
       {step === 3 && <button className="button secondary" onClick={() => props.navigate('providers')}>Configure provider</button>}
       {step === 4 && <button className="button secondary" onClick={() => props.navigate('providers')}>Test connection</button>}
@@ -284,12 +285,36 @@ function DocumentsSection(props: { repository: ReturnType<typeof createChromePro
   const [progress, setProgress] = useState('')
   const [localError, setLocalError] = useState('')
   if (props.locked) return <section><PageHeader title="Documents" description="Import reviewed information into a selected profile." /><div className="locked-panel"><h2>Unlock required</h2><p>Document candidates cannot be persisted while the vault is locked.</p><a className="button primary" href="#encryption">Unlock vault</a></div></section>
-  const choose = async (file?: File) => { if (!file) return; try { setLocalError(''); setProgress('Reading PDF locally…'); const extracted = await extractTextFromPdf(file); setProgress('Extracting candidate information…'); const parsed = parseCvText(extracted.text); setCandidates(parsedCvToCandidates(parsed)); setSourceLabel(`Imported from ${file.name}`); setProgress(`${extracted.processedPages} page(s) read. Review every candidate before confirming.`) } catch (caught) { setCandidates([]); setProgress(''); setLocalError(readableError(caught)) } }
-  const sources = [...new Set(props.knowledge?.entries.filter((entry) => entry.sourceId.startsWith('source_pdf_')).map((entry) => entry.sourceLabel ?? entry.sourceId) ?? [])]
-  return <section><PageHeader title="Documents" description="PDF text is parsed locally. Nothing is saved until you confirm the reviewed candidates." />{localError && <Status message={localError} error />}
-    <div className="document-upload"><label htmlFor="target-profile">Target profile</label><select id="target-profile" value={target} onChange={(e) => setTarget(e.target.value)}><option value="">Select a profile</option>{props.knowledge?.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><label className={`file-button ${!target ? 'disabled' : ''}`}>Choose PDF<input type="file" accept="application/pdf,.pdf" disabled={!target} onChange={(e) => void choose(e.target.files?.[0])} /></label><small>PDF only, up to 8 MB. DOCX and OCR are not available.</small></div>
+  const choose = async (file?: File) => {
+    if (!file) return
+    try {
+      setLocalError('')
+      setProgress('Reading document locally…')
+      const extracted = await extractTextFromDocument(file)
+      setProgress('Extracting candidate information…')
+      const parsed = parseCvText(extracted.text)
+      setCandidates(parsedCvToCandidates(parsed))
+      setSourceLabel(`Imported from ${file.name}`)
+      const readSummary = extracted.fileType === 'pdf'
+        ? `${extracted.processedPages} page(s) read.`
+        : `${extracted.fileType.toUpperCase()} text read.`
+      const warningSummary = extracted.warnings.length
+        ? ` ${extracted.warnings.length} document warning(s) were reported.`
+        : ''
+      setProgress(`${readSummary}${warningSummary} Review every candidate before confirming.`)
+    } catch (caught) {
+      setCandidates([])
+      setProgress('')
+      setLocalError(readableError(caught))
+    }
+  }
+  const sources = [...new Set(props.knowledge?.entries
+    .filter((entry) => entry.sourceId.startsWith('source_document_') || entry.sourceId.startsWith('source_pdf_'))
+    .map((entry) => entry.sourceLabel ?? entry.sourceId) ?? [])]
+  return <section><PageHeader title="Documents" description="PDF, DOCX, and TXT text is parsed locally. Nothing is saved until you confirm the reviewed candidates." />{localError && <Status message={localError} error />}
+    <div className="document-upload"><label htmlFor="target-profile">Target profile</label><select id="target-profile" value={target} onChange={(e) => setTarget(e.target.value)}><option value="">Select a profile</option>{props.knowledge?.profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}</select><label className={`file-button ${!target ? 'disabled' : ''}`}>Choose document<input type="file" accept={DOCUMENT_FILE_ACCEPT} disabled={!target} onChange={(e) => { const input = e.currentTarget; void choose(input.files?.[0]); input.value = '' }} /></label><small>PDF, DOCX, or TXT, up to 8 MB. PDFs must contain selectable text; OCR is not available.</small></div>
     {progress && <Status message={progress} />}
-    {candidates.length > 0 && <div className="candidate-review"><h2>Review candidates</h2>{candidates.map((candidate) => <article key={candidate.id}><label>Label<input value={candidate.label} onChange={(e) => setCandidates((items) => items.map((item) => item.id === candidate.id ? { ...item, label: e.target.value } : item))} /></label><label>Value<textarea rows={2} value={candidate.value} onChange={(e) => setCandidates((items) => items.map((item) => item.id === candidate.id ? { ...item, value: e.target.value } : item))} /></label><label>On conflict<select value={candidate.decision} onChange={(e) => setCandidates((items) => items.map((item) => item.id === candidate.id ? { ...item, decision: e.target.value as ImportCandidate['decision'] } : item))}><option value="keep">Keep existing value</option><option value="replace">Replace existing value</option><option value="alternative">Add alternative entry</option></select></label><button className="text-button danger-text" onClick={() => setCandidates((items) => items.filter((item) => item.id !== candidate.id))}>Remove candidate</button></article>)}<div className="button-row"><button className="button secondary" onClick={() => { setCandidates([]); setProgress('Import cancelled. No profile data was changed.') }}>Cancel</button><button className="button primary" onClick={() => void (async () => { try { await confirmDocumentImport(props.repository!, { confirmed: true, profileId: target, sourceId: `source_pdf_${Date.now().toString(36)}`, sourceLabel, candidates }); setCandidates([]); setProgress('Import confirmed and profile updated.'); await props.refresh() } catch (caught) { setLocalError(readableError(caught)) } })()}>Confirm import</button></div></div>}
+    {candidates.length > 0 && <div className="candidate-review"><h2>Review candidates</h2>{candidates.map((candidate) => <article key={candidate.id}><label>Label<input value={candidate.label} onChange={(e) => setCandidates((items) => items.map((item) => item.id === candidate.id ? { ...item, label: e.target.value } : item))} /></label><label>Value<textarea rows={2} value={candidate.value} onChange={(e) => setCandidates((items) => items.map((item) => item.id === candidate.id ? { ...item, value: e.target.value } : item))} /></label><label>On conflict<select value={candidate.decision} onChange={(e) => setCandidates((items) => items.map((item) => item.id === candidate.id ? { ...item, decision: e.target.value as ImportCandidate['decision'] } : item))}><option value="keep">Keep existing value</option><option value="replace">Replace existing value</option><option value="alternative">Add alternative entry</option></select></label><button className="text-button danger-text" onClick={() => setCandidates((items) => items.filter((item) => item.id !== candidate.id))}>Remove candidate</button></article>)}<div className="button-row"><button className="button secondary" onClick={() => { setCandidates([]); setProgress('Import cancelled. No profile data was changed.') }}>Cancel</button><button className="button primary" onClick={() => void (async () => { try { await confirmDocumentImport(props.repository!, { confirmed: true, profileId: target, sourceId: `source_document_${Date.now().toString(36)}`, sourceLabel, candidates }); setCandidates([]); setProgress('Import confirmed and profile updated.'); await props.refresh() } catch (caught) { setLocalError(readableError(caught)) } })()}>Confirm import</button></div></div>}
     <div className="source-list"><h2>Imported sources</h2>{sources.length ? <ul>{sources.map((source) => <li key={source}>{source}</li>)}</ul> : <p>No imported source records.</p>}<small>Original document bytes and extracted text are not stored.</small></div>
   </section>
 }

@@ -1,7 +1,8 @@
 import React, { useRef, useState } from 'react'
 import type { SuggestionSensitivity } from '../features/suggestions/suggestionTypes'
 import { createChromeProfileRepository } from '../features/suggestions/profileRepository'
-import { extractTextFromPdf } from '../features/import/pdfTextExtractor'
+import { DOCUMENT_FILE_ACCEPT } from '../features/import/documentFileValidation'
+import { extractTextFromDocument } from '../features/import/documentTextExtractor'
 import { parseCvText } from '../features/import/pdfCvParser'
 import { saveReviewedProfile } from './setupProfileService'
 
@@ -93,7 +94,7 @@ const parseChatInput = (text: string): CustomEntry[] => {
 
 const STORAGE_SOURCE_ID = 'source_setup_assistant'
 const STORAGE_SOURCE_LABEL = 'Setup Assistant'
-const PDF_SOURCE_ID = 'source_pdf_document_import'
+const DOCUMENT_SOURCE_ID = 'source_document_import'
 
 const BASIC_FIELDS: Field[] = [
   { key: 'name',                 label: 'Full name',          placeholder: 'Alice Smith',                    required: false },
@@ -157,7 +158,7 @@ export default function SetupAssistant() {
   const [status, setStatus]       = useState<Status>('idle')
   const [message, setMessage]     = useState('')
   const [saved, setSaved]         = useState<Record<string, unknown> | null>(null)
-  const [pdfImporting, setPdfImporting] = useState(false)
+  const [documentImporting, setDocumentImporting] = useState(false)
   const [importSourceLabel, setImportSourceLabel] = useState(STORAGE_SOURCE_LABEL)
   const [importDetails, setImportDetails] = useState<string | null>(null)
   const [importWarnings, setImportWarnings] = useState<string[]>([])
@@ -205,7 +206,7 @@ export default function SetupAssistant() {
     setMessage('')
   }
 
-  const handlePdfSelection = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDocumentSelection = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     event.target.value = ''
 
@@ -213,13 +214,13 @@ export default function SetupAssistant() {
       return
     }
 
-    setPdfImporting(true)
+    setDocumentImporting(true)
     setStatus('idle')
     setMessage('')
     setImportWarnings([])
 
     try {
-      const extracted = await extractTextFromPdf(file)
+      const extracted = await extractTextFromDocument(file)
       const parsed = parseCvText(extracted.text)
       const importedEntries: CustomEntry[] = parsed.entries.map((entry) => ({
         id: Math.random().toString(36).slice(2),
@@ -231,10 +232,12 @@ export default function SetupAssistant() {
 
       setValues((previous) => ({ ...previous, ...parsed.values }))
       setEntries(importedEntries)
-      setImportWarnings(parsed.warnings)
+      setImportWarnings([...extracted.warnings, ...parsed.warnings])
       setImportSourceLabel(`Imported from ${extracted.fileName}`)
       setImportDetails(
-        `${extracted.fileName}: ${extracted.processedPages} of ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'} read locally.`
+        extracted.fileType === 'pdf'
+          ? `${extracted.fileName}: ${extracted.processedPages} of ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'} read locally.`
+          : `${extracted.fileName}: ${extracted.fileType.toUpperCase()} text read locally.`
       )
 
       if (!accountId.trim() && parsed.profileName) {
@@ -242,7 +245,7 @@ export default function SetupAssistant() {
       }
 
       const truncationWarning = extracted.truncated
-        ? 'Only the first part of this PDF was read. Review the imported information carefully.'
+        ? 'Only the first part of this document was read. Review the imported information carefully.'
         : null
 
       setMessage(
@@ -251,10 +254,10 @@ export default function SetupAssistant() {
     } catch (error) {
       setImportDetails(null)
       setImportWarnings([])
-      setMessage(error instanceof Error ? error.message : 'The PDF document could not be imported.')
+      setMessage(error instanceof Error ? error.message : 'The document could not be imported.')
       setStatus('error')
     } finally {
-      setPdfImporting(false)
+      setDocumentImporting(false)
     }
   }
 
@@ -319,7 +322,7 @@ export default function SetupAssistant() {
           title.trim() && content.trim() ? [{ title, content, long, sensitivity }] : []
         ),
         fieldSensitivity,
-        sourceId: importSourceLabel === STORAGE_SOURCE_LABEL ? STORAGE_SOURCE_ID : PDF_SOURCE_ID,
+        sourceId: importSourceLabel === STORAGE_SOURCE_LABEL ? STORAGE_SOURCE_ID : DOCUMENT_SOURCE_ID,
         sourceLabel: importSourceLabel
       })
 
@@ -454,30 +457,30 @@ export default function SetupAssistant() {
 
         <div className="rounded-2xl border border-slate-200/70 bg-white/85 p-6 shadow-sm backdrop-blur space-y-5">
 
-          {/* document PDF import */}
+          {/* document import */}
           <div className="rounded-xl border border-cyan-100 bg-cyan-50/60 p-4">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <div className="text-sm font-semibold text-slate-800">Import document from PDF</div>
+                <div className="text-sm font-semibold text-slate-800">Import document</div>
                 <p className="mt-1 text-[12px] leading-5 text-slate-600">
-                  Select a text-based PDF document. The original PDF is not uploaded or stored.
+                  Select a PDF, DOCX, or TXT document. The original file is not uploaded or stored.
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={pdfImporting}
+                disabled={documentImporting}
                 className="shrink-0 rounded-lg bg-cyan-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-cyan-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {pdfImporting ? 'Reading PDF...' : 'Choose PDF'}
+                {documentImporting ? 'Reading document...' : 'Choose document'}
               </button>
             </div>
 
             <input
               ref={fileInputRef}
               type="file"
-              accept="application/pdf,.pdf"
-              onChange={handlePdfSelection}
+              accept={DOCUMENT_FILE_ACCEPT}
+              onChange={handleDocumentSelection}
               className="hidden"
             />
 
@@ -683,7 +686,7 @@ export default function SetupAssistant() {
                 >
                   Add to entries
                 </button>
-                <span className="text-[11px] text-slate-400">PDF document import is available above.</span>
+                <span className="text-[11px] text-slate-400">Document import is available above.</span>
               </div>
             </div>
           </div>
