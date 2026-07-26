@@ -2,7 +2,7 @@
   "name": "smart-ai-form-filler",
   "version": "0.1.0",
   "private": true,
-  "description": "Smart Form Filler — privacy-first local personal knowledge system (Phase 1)",
+  "description": "Privacy-focused Chrome extension for reviewed, profile-based form filling",
   "scripts": {
     "dev": "vite --config apps/extension/vite.config.ts",
     "dev:extension": "vite --config apps/extension/vite.config.ts",
